@@ -202,9 +202,17 @@ function handleServerMessage(msg) {
     }
     entry.resolve(msg);
   } else if (msg.id !== undefined && msg.method) {
-    // Server-initiated request (e.g. client/registerCapability) — ack it.
-    const reply = JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: null });
-    child.stdin.write(`Content-Length: ${Buffer.byteLength(reply)}\r\n\r\n${reply}`);
+    if (msg.method === "window/showMessageRequest") {
+      // The server wants to ask the user something (e.g. which build tool to
+      // use). Forward it to Zed, which renders a prompt and replies with the
+      // user's choice. Intercepting it (as we do for other server-initiated
+      // requests) would swallow the prompt and make the import silently skip.
+      process.stdout.write(encodeLsp(msg));
+    } else {
+      // Server-initiated request (e.g. client/registerCapability) — ack it.
+      const reply = JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: null });
+      child.stdin.write(`Content-Length: ${Buffer.byteLength(reply)}\r\n\r\n${reply}`);
+    }
   } else {
     // Response or notification meant for Zed — forward unchanged.
     process.stdout.write(encodeLsp(msg));

@@ -162,10 +162,12 @@ reused on subsequent launches.
 
 ### Choosing a build tool
 
-By default the extension auto-detects the build tool from the project files
-(`build.gradle.kts` → Gradle, `pom.xml` → Maven, `BUILD.bazel` → Bazel,
-`.idea/`/`.iml` → JPS). If a project mixes several formats (e.g. Gradle plus a
-`.idea/` folder) and auto-detection picks the wrong one, pin it in
+By default the extension lets the server auto-detect the build tool. When a
+project mixes formats (e.g. `build.gradle.kts` **and** a `.idea/` JPS folder),
+the server asks which one to use and Zed shows the choice — pick `Use Gradle`,
+`Use Maven`, etc. Nothing is decided for you.
+
+To pin the choice (skip the prompt) or disable import, set it in
 `~/.config/zed/settings.json`:
 
 ```json
@@ -179,7 +181,8 @@ By default the extension auto-detects the build tool from the project files
 ```
 
 Valid values: `gradle`, `maven`, `bazel`, `jps`. Omit the setting (or set it
-to `null`) to auto-detect, or `""` to disable project import.
+to `null`) to auto-detect + prompt on conflict, or `""` to disable project
+import.
 
 ## Evaluation & License
 

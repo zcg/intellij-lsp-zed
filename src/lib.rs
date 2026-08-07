@@ -311,50 +311,6 @@ fn is_main_run_task(build_task: &zed::TaskTemplate) -> bool {
         || command_lower.contains("exec:java")
 }
 
-/// Infers the build tool from well-known build files in the project root.
-///
-/// Returns `"null"` when nothing is found so the server falls back to its own
-/// auto-detection (or shows its prompt when several tools are present).
-fn detect_build_tool(root: &str) -> &'static str {
-    if [
-        "build.gradle.kts",
-        "build.gradle",
-        "settings.gradle.kts",
-        "settings.gradle",
-    ]
-    .iter()
-    .any(|f| fs::metadata(format!("{root}/{f}")).is_ok())
-    {
-        "gradle"
-    } else if fs::metadata(format!("{root}/pom.xml")).is_ok() {
-        "maven"
-    } else if [
-        "BUILD.bazel",
-        "MODULE.bazel",
-        "WORKSPACE",
-        "WORKSPACE.bazel",
-    ]
-    .iter()
-    .any(|f| fs::metadata(format!("{root}/{f}")).is_ok())
-    {
-        "bazel"
-    } else if fs::metadata(format!("{root}/.idea")).is_ok()
-        || fs::read_dir(root).is_ok_and(|mut entries| {
-            entries.any(|e| {
-                e.ok().is_some_and(|f| {
-                    let n = f.file_name().to_string_lossy().to_string();
-                    n.ends_with(".iml") || n.ends_with(".ipr")
-                })
-            })
-        })
-    {
-        "jps"
-    } else {
-        // Nothing recognized — let the server decide.
-        "null"
-    }
-}
-
 impl IntelliJLspExtension {
     fn server_version_dir(version: &str) -> String {
         format!("intellij-server-{}", version)
@@ -647,19 +603,16 @@ impl Extension for IntelliJLspExtension {
         });
 
         // `buildTools` tells the server which build tool to use for each
-        // workspace folder. `null` (auto-detect) was observed to make the
-        // server skip the import ("No projects to import: ... skipped 1"),
-        // leaving the classpath empty and debug launches failing with
-        // `ClassNotFoundException`. Explicitly naming the build tool (e.g.
-        // "gradle") triggers `Trying to import using gradle`.
+        // workspace folder. By default we pass `null` and let the server
+        // auto-detect — when several build tools are present (e.g. Gradle +
+        // a `.idea/` JPS folder) it sends a `window/showMessageRequest` prompt
+        // and the user chooses (the proxy forwards that prompt to Zed, which
+        // renders it). This is the original, user-driven behaviour.
         //
-        // Precedence:
-        //   1. User configuration (`lsp.intellij-server.settings.buildTool`)
-        //      — lets the user pick when automatic detection would be wrong.
-        //   2. Automatic detection from well-known build files, falling back
-        //      to JPS (`.idea/` / `.iml` / `.ipr`).
+        // A user can override the choice in settings.json:
+        //   lsp.intellij-server.settings.buildTool = "gradle" | "maven" |
+        //   "bazel" | "jps"  ("" disables import, null/omitted = auto-detect).
         let ws_uri = workspace_uri(&worktree.root_path());
-        let root = worktree.root_path();
         let configured = LspSettings::for_worktree("intellij-server", worktree)
             .ok()
             .and_then(|s| s.settings)
@@ -673,18 +626,10 @@ impl Extension for IntelliJLspExtension {
             Some("maven") => "maven",
             Some("bazel") => "bazel",
             Some("jps") => "jps",
-            // `null` / `""` lets the server decide (auto-detect / disable).
-            Some("") | Some("null") | None => "null",
-            Some(other) => {
-                // Unknown value — ignore and fall back to detection.
-                eprintln!("[intellij-lsp] unknown buildTool '{other}', auto-detecting");
-                "null"
-            }
-        };
-        let build_tool = if build_tool != "null" {
-            build_tool
-        } else {
-            detect_build_tool(&root)
+            // "" disables all build tools; null/omitted lets the server
+            // decide (auto-detect, prompt on conflict).
+            Some("") => "",
+            _ => "null",
         };
 
         Ok(Some(serde_json::json!({
