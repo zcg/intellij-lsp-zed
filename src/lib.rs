@@ -603,7 +603,7 @@ impl Extension for IntelliJLspExtension {
         });
 
         // `buildTools` tells the server which build tool to use for each
-        // workspace folder. By default we pass `null` and let the server
+        // workspace folder. By default we pass JSON `null` and let the server
         // auto-detect — when several build tools are present (e.g. Gradle +
         // a `.idea/` JPS folder) it sends a `window/showMessageRequest` prompt
         // and the user chooses (the proxy forwards that prompt to Zed, which
@@ -612,6 +612,9 @@ impl Extension for IntelliJLspExtension {
         // A user can override the choice in settings.json:
         //   lsp.intellij-server.settings.buildTool = "gradle" | "maven" |
         //   "bazel" | "jps"  ("" disables import, null/omitted = auto-detect).
+        //
+        // IMPORTANT: the default must be a JSON `null` (Value::Null), not the
+        // string "null" — the latter is treated as an unknown build tool name.
         let ws_uri = workspace_uri(&worktree.root_path());
         let configured = LspSettings::for_worktree("intellij-server", worktree)
             .ok()
@@ -621,15 +624,15 @@ impl Extension for IntelliJLspExtension {
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string)
             });
-        let build_tool = match configured.as_deref() {
-            Some("gradle") => "gradle",
-            Some("maven") => "maven",
-            Some("bazel") => "bazel",
-            Some("jps") => "jps",
+        let build_tool: serde_json::Value = match configured.as_deref() {
+            Some("gradle") => serde_json::json!("gradle"),
+            Some("maven") => serde_json::json!("maven"),
+            Some("bazel") => serde_json::json!("bazel"),
+            Some("jps") => serde_json::json!("jps"),
             // "" disables all build tools; null/omitted lets the server
             // decide (auto-detect, prompt on conflict).
-            Some("") => "",
-            _ => "null",
+            Some("") => serde_json::json!(""),
+            _ => serde_json::Value::Null,
         };
 
         Ok(Some(serde_json::json!({
@@ -832,6 +835,25 @@ zed::register_extension!(IntelliJLspExtension);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The buildTool default must serialize to JSON `null`, not the string
+    /// "null" — the IntelliJ server rejects "null" as an unknown build tool.
+    #[test]
+    fn test_build_tool_default_is_json_null() {
+        let build_tool: serde_json::Value = serde_json::Value::Null;
+        let init = serde_json::json!({
+            "buildTools": { "file:///proj": build_tool }
+        });
+        let serialized = init.to_string();
+        assert!(
+            serialized.contains(":null") || serialized.contains(": null"),
+            "expected JSON null, got: {serialized}"
+        );
+        assert!(
+            !serialized.contains("\"null\""),
+            "must not serialize the string \"null\": {serialized}"
+        );
+    }
 
     #[test]
     fn test_find_binary_in_empty_dir() {
