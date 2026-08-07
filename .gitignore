@@ -1,5 +1,10 @@
 target/
 node_modules/
 
+# Zed builds tree-sitter grammars into grammars/ during dev-extension
+# compilation; these are generated artifacts (including a full grammar repo
+# checkout), not source.
+grammars/
+
 # macOS junk
 .DS_Store

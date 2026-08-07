@@ -22,43 +22,54 @@ jobs:
           TMP=$(mktemp -d)
           cd "$TMP"
 
-          echo "== Step 1: Fetch Open VSX API =="
-          curl -fsSL -o meta.json "https://open-vsx.org/api/JetBrains/intellij-server/latest" \
-            || { echo "FAILED: Open VSX API unreachable"; exit 1; }
-          VSIX_URL=$(python3 -c "
+          echo "== Step 1-4: For each platform, verify the full download chain =="
+          # The extension resolves the platform via `openvsx_platform()` and
+          # requests the platform-specific endpoint — NOT `/latest`, which
+          # defaults to `darwin-arm64`. Verify every published platform so a
+          # missing build is caught before users hit it.
+          for PLATFORM in win32-x64 win32-arm64 linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
+            echo "---- Platform: $PLATFORM ----"
+
+            echo "== Fetch Open VSX API =="
+            curl -fsSL -o "meta-$PLATFORM.json" "https://open-vsx.org/api/JetBrains/intellij-server/$PLATFORM/latest" \
+              || { echo "FAILED: Open VSX API unreachable for $PLATFORM"; exit 1; }
+            VSIX_URL=$(python3 -c "
 import json
-m = json.load(open('meta.json'))
+m = json.load(open('meta-$PLATFORM.json'))
 print(m.get('files', {}).get('download', '') or m.get('download', ''))
 " )
-          [ -n "$VSIX_URL" ] || { echo "FAILED: no VSIX download URL in API response"; exit 1; }
-          echo "VSIX URL: $VSIX_URL"
+            [ -n "$VSIX_URL" ] || { echo "FAILED: no VSIX download URL for $PLATFORM"; exit 1; }
+            echo "VSIX URL: $VSIX_URL"
 
-          echo "== Step 2: Download and extract VSIX =="
-          curl -fsSL -o vsix.zip "$VSIX_URL" || { echo "FAILED: VSIX download"; exit 1; }
-          unzip -q vsix.zip -d vsix || { echo "FAILED: VSIX extraction"; exit 1; }
-          [ -f "vsix/extension/server-bundle.json" ] || { echo "FAILED: server-bundle.json missing"; exit 1; }
+            echo "== Download and extract VSIX =="
+            curl -fsSL -o "vsix-$PLATFORM.zip" "$VSIX_URL" || { echo "FAILED: VSIX download for $PLATFORM"; exit 1; }
+            rm -rf "vsix-$PLATFORM" && unzip -q "vsix-$PLATFORM.zip" -d "vsix-$PLATFORM" || { echo "FAILED: VSIX extraction for $PLATFORM"; exit 1; }
+            [ -f "vsix-$PLATFORM/extension/server-bundle.json" ] || { echo "FAILED: server-bundle.json missing for $PLATFORM"; exit 1; }
 
-          echo "== Step 3: Read server-bundle.json =="
-          SERVER_URL=$(python3 -c "
+            echo "== Read server-bundle.json =="
+            SERVER_URL=$(python3 -c "
 import json
-b = json.load(open('vsix/extension/server-bundle.json'))
+b = json.load(open('vsix-$PLATFORM/extension/server-bundle.json'))
 print(b['url'])
-" ) || { echo "FAILED: bad server-bundle.json"; exit 1; }
-          VERSION=$(python3 -c "
+" ) || { echo "FAILED: bad server-bundle.json for $PLATFORM"; exit 1; }
+            VERSION=$(python3 -c "
 import json
-b = json.load(open('vsix/extension/server-bundle.json'))
+b = json.load(open('vsix-$PLATFORM/extension/server-bundle.json'))
 print(b['version'])
 " )
-          echo "Server version: $VERSION"
-          echo "Server URL: $SERVER_URL"
+            echo "Server version: $VERSION"
+            echo "Server URL: $SERVER_URL"
 
-          echo "== Step 4: Verify server URL responds =="
-          STATUS=$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 60 "$SERVER_URL")
-          echo "HTTP status: $STATUS"
-          [ "$STATUS" = "200" ] || { echo "FAILED: server URL returned $STATUS"; exit 1; }
+            echo "== Verify server URL responds =="
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 60 "$SERVER_URL")
+            echo "HTTP status: $STATUS"
+            [ "$STATUS" = "200" ] || { echo "FAILED: server URL for $PLATFORM returned $STATUS"; exit 1; }
+
+            # Use the last platform's version as the health-check version.
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          done
 
           echo "== All checks passed =="
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Close stale health issues
         if: steps.check.outputs.version != ''
@@ -115,7 +126,7 @@ print(b['version'])
 
             **Run the failing step locally to see the error:**
             \`\`\`sh
-            curl -sL "https://open-vsx.org/api/JetBrains/intellij-server/latest"
+            curl -sL "https://open-vsx.org/api/JetBrains/intellij-server/win32-x64/latest"
             \`\`\`
 
             **Fix:** update \`src/lib.rs\` accordingly, rebuild, and release.`,

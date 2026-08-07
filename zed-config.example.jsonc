@@ -1,6 +1,6 @@
 // Optional Zed configuration — add these lines to ~/.config/zed/settings.json
-// only if you want to use the IntelliJ server for Java/Kotlin instead of
-// Zed's built-in servers.
+// if you want to use the IntelliJ server for Java/Kotlin instead of Zed's
+// built-in servers, and the IntelliJ debugger for Java (Kotlin already uses it).
 //
 // The extension is fully self-contained: it downloads the IntelliJ LSP server
 // automatically on first launch. No other setup needed.
@@ -9,6 +9,7 @@
   "languages": {
     "Java": {
       "language_servers": ["intellij-server", "!jdtls"],
+      "debuggers": ["intellij_debugger"],
     },
     "Kotlin": {
       "language_servers": ["intellij-server", "!kotlin-language-server"],

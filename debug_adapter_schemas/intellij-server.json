@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "oneOf": [
+    {
+      "title": "Launch",
+      "properties": {
+        "request": {
+          "type": "string",
+          "enum": ["launch"],
+          "description": "The request type for the IntelliJ debug adapter, always \"launch\"."
+        },
+        "mainClass": {
+          "type": "string",
+          "description": "Fully-qualified name of the main class to run (e.g. `com.example.Main` or `MainKt` for Kotlin). If omitted, the IntelliJ server auto-resolves it from the project model."
+        },
+        "file": {
+          "type": "string",
+          "description": "Path to the source file declaring the main class. Used to launch directly from a file, and to disambiguate when the main class name is declared in more than one file. Supports ${file}."
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Program arguments passed to the main class."
+        },
+        "vmArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "JVM arguments."
+        },
+        "classPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Override classpath. If empty, the LSP server resolves it from the project model."
+        },
+        "modulePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Module path entries for JPMS launches. Specify manually; the LSP server does not resolve these automatically."
+        },
+        "javaExec": {
+          "type": "string",
+          "description": "Path to the java executable. If empty, the project SDK is used."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for the launched process. Defaults to ${workspaceFolder}."
+        },
+        "env": {
+          "type": "object",
+          "description": "Extra environment variables for the launched process.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["request"]
+    },
+    {
+      "title": "Attach",
+      "properties": {
+        "request": {
+          "type": "string",
+          "enum": ["attach"],
+          "description": "The request type for the IntelliJ debug adapter, always \"attach\"."
+        },
+        "hostName": {
+          "type": "string",
+          "description": "Host the JVM is listening on.",
+          "default": "localhost"
+        },
+        "port": {
+          "type": "number",
+          "description": "JDWP port the JVM is listening on.",
+          "default": 5005
+        },
+        "timeout": {
+          "type": "number",
+          "description": "Connection timeout in milliseconds.",
+          "default": 30000
+        }
+      },
+      "required": ["request", "port"]
+    }
+  ]
+}

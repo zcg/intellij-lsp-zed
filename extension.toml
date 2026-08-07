@@ -5,14 +5,23 @@ schema_version = 1
 description = "IntelliJ IDEA LSP server for Java and Kotlin"
 repository = "https://github.com/hlucas13/intellij-lsp-zed"
 authors = ["Homero Lucas do Prado"]
-languages = []
+languages = ["languages/kotlin"]
 capabilities = []
 
 [lib]
 kind = "Rust"
 version = "0.7.0"
 
+[grammars.kotlin]
+repository = "https://github.com/fwcd/tree-sitter-kotlin"
+rev = "4e909d6cc9ac96b4eaecb3fb538eaca48e9e9ee9"
+
 [language_servers.intellij-server]
 name = "IntelliJ Language Server"
 language = "Java"
 languages = ["Java", "Kotlin"]
+
+[debug_adapters.intellij_debugger]
+schema_path = "debug_adapter_schemas/intellij-server.json"
+
+[debug_locators.intellij_debugger]
