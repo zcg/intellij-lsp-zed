@@ -160,6 +160,27 @@ runtime, so no separate download is needed.
 Fresh installs always get the latest published build. Cached versions are
 reused on subsequent launches.
 
+### Choosing a build tool
+
+By default the extension auto-detects the build tool from the project files
+(`build.gradle.kts` → Gradle, `pom.xml` → Maven, `BUILD.bazel` → Bazel,
+`.idea/`/`.iml` → JPS). If a project mixes several formats (e.g. Gradle plus a
+`.idea/` folder) and auto-detection picks the wrong one, pin it in
+`~/.config/zed/settings.json`:
+
+```json
+"lsp": {
+  "intellij-server": {
+    "settings": {
+      "buildTool": "gradle"
+    }
+  }
+}
+```
+
+Valid values: `gradle`, `maven`, `bazel`, `jps`. Omit the setting (or set it
+to `null`) to auto-detect, or `""` to disable project import.
+
 ## Evaluation & License
 
 - During the preview the extension is **free** — each build is valid for

@@ -263,7 +263,16 @@ server.listen(0, "127.0.0.1", () => {
   }
 });
 
+function cleanupPortFile() {
+  try {
+    const hex = Buffer.from(workspaceUri, "utf8").toString("hex");
+    const pf = path.join(proxyDir, hex);
+    if (fs.existsSync(pf)) fs.unlinkSync(pf);
+  } catch {}
+}
+
 child.on("exit", (code) => {
+  cleanupPortFile();
   try {
     server.close();
     dapProxy.close();
@@ -271,5 +280,13 @@ child.on("exit", (code) => {
   process.exit(code || 0);
 });
 
-process.on("SIGTERM", () => child.kill());
-process.on("SIGINT", () => child.kill());
+// Clean up the port file on normal shutdown too (not just child exit).
+process.on("SIGTERM", () => {
+  cleanupPortFile();
+  child.kill();
+});
+process.on("SIGINT", () => {
+  cleanupPortFile();
+  child.kill();
+});
+process.on("exit", cleanupPortFile);

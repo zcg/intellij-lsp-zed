@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use std::fs;
 use zed_extension_api::{
     self as zed, current_platform, download_file, make_file_executable, node_binary_path,
-    resolve_tcp_template, set_language_server_installation_status, Architecture, Command,
-    DebugAdapterBinary, DebugConfig, DebugRequest, DebugScenario, DebugTaskDefinition,
-    DownloadedFileType, Extension, LanguageServerId, LanguageServerInstallationStatus, Os, Result,
-    StartDebuggingRequestArguments, StartDebuggingRequestArgumentsRequest, TcpArgumentsTemplate,
-    Worktree,
+    resolve_tcp_template, set_language_server_installation_status, settings::LspSettings,
+    Architecture, Command, DebugAdapterBinary, DebugConfig, DebugRequest, DebugScenario,
+    DebugTaskDefinition, DownloadedFileType, Extension, LanguageServerId,
+    LanguageServerInstallationStatus, Os, Result, StartDebuggingRequestArguments,
+    StartDebuggingRequestArgumentsRequest, TcpArgumentsTemplate, Worktree,
 };
 
 /// The debug adapter name exposed to Zed. Declared in `extension.toml` under
@@ -311,6 +311,50 @@ fn is_main_run_task(build_task: &zed::TaskTemplate) -> bool {
         || command_lower.contains("exec:java")
 }
 
+/// Infers the build tool from well-known build files in the project root.
+///
+/// Returns `"null"` when nothing is found so the server falls back to its own
+/// auto-detection (or shows its prompt when several tools are present).
+fn detect_build_tool(root: &str) -> &'static str {
+    if [
+        "build.gradle.kts",
+        "build.gradle",
+        "settings.gradle.kts",
+        "settings.gradle",
+    ]
+    .iter()
+    .any(|f| fs::metadata(format!("{root}/{f}")).is_ok())
+    {
+        "gradle"
+    } else if fs::metadata(format!("{root}/pom.xml")).is_ok() {
+        "maven"
+    } else if [
+        "BUILD.bazel",
+        "MODULE.bazel",
+        "WORKSPACE",
+        "WORKSPACE.bazel",
+    ]
+    .iter()
+    .any(|f| fs::metadata(format!("{root}/{f}")).is_ok())
+    {
+        "bazel"
+    } else if fs::metadata(format!("{root}/.idea")).is_ok()
+        || fs::read_dir(root).is_ok_and(|mut entries| {
+            entries.any(|e| {
+                e.ok().is_some_and(|f| {
+                    let n = f.file_name().to_string_lossy().to_string();
+                    n.ends_with(".iml") || n.ends_with(".ipr")
+                })
+            })
+        })
+    {
+        "jps"
+    } else {
+        // Nothing recognized — let the server decide.
+        "null"
+    }
+}
+
 impl IntelliJLspExtension {
     fn server_version_dir(version: &str) -> String {
         format!("intellij-server-{}", version)
@@ -607,51 +651,41 @@ impl Extension for IntelliJLspExtension {
         // server skip the import ("No projects to import: ... skipped 1"),
         // leaving the classpath empty and debug launches failing with
         // `ClassNotFoundException`. Explicitly naming the build tool (e.g.
-        // "gradle") triggers `Trying to import using gradle`. Infer it from
-        // the presence of well-known build files, falling back to JPS (the
-        // JetBrains-native project format, driven by `.idea/`, `.iml`, `.ipr`).
+        // "gradle") triggers `Trying to import using gradle`.
+        //
+        // Precedence:
+        //   1. User configuration (`lsp.intellij-server.settings.buildTool`)
+        //      — lets the user pick when automatic detection would be wrong.
+        //   2. Automatic detection from well-known build files, falling back
+        //      to JPS (`.idea/` / `.iml` / `.ipr`).
         let ws_uri = workspace_uri(&worktree.root_path());
         let root = worktree.root_path();
-        let build_tool = [
-            "build.gradle.kts",
-            "build.gradle",
-            "settings.gradle.kts",
-            "settings.gradle",
-        ]
-        .iter()
-        .any(|f| fs::metadata(format!("{root}/{f}")).is_ok())
-        .then_some("gradle")
-        .or_else(|| {
-            fs::metadata(format!("{root}/pom.xml"))
-                .is_ok()
-                .then_some("maven")
-        })
-        .or_else(|| {
-            [
-                "BUILD.bazel",
-                "MODULE.bazel",
-                "WORKSPACE",
-                "WORKSPACE.bazel",
-            ]
-            .iter()
-            .any(|f| fs::metadata(format!("{root}/{f}")).is_ok())
-            .then_some("bazel")
-        })
-        .or_else(|| {
-            // JPS: JetBrains-native project. `.idea/` directory or any
-            // `.iml`/`.ipr` file in the project root.
-            let has_jps = fs::metadata(format!("{root}/.idea")).is_ok()
-                || fs::read_dir(&root).is_ok_and(|mut entries| {
-                    entries.any(|e| {
-                        e.ok().is_some_and(|f| {
-                            let n = f.file_name().to_string_lossy().to_string();
-                            n.ends_with(".iml") || n.ends_with(".ipr")
-                        })
-                    })
-                });
-            has_jps.then_some("jps")
-        })
-        .unwrap_or("jps"); // last resort: JetBrains-native format
+        let configured = LspSettings::for_worktree("intellij-server", worktree)
+            .ok()
+            .and_then(|s| s.settings)
+            .and_then(|s| {
+                s.get("buildTool")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            });
+        let build_tool = match configured.as_deref() {
+            Some("gradle") => "gradle",
+            Some("maven") => "maven",
+            Some("bazel") => "bazel",
+            Some("jps") => "jps",
+            // `null` / `""` lets the server decide (auto-detect / disable).
+            Some("") | Some("null") | None => "null",
+            Some(other) => {
+                // Unknown value — ignore and fall back to detection.
+                eprintln!("[intellij-lsp] unknown buildTool '{other}', auto-detecting");
+                "null"
+            }
+        };
+        let build_tool = if build_tool != "null" {
+            build_tool
+        } else {
+            detect_build_tool(&root)
+        };
 
         Ok(Some(serde_json::json!({
             "eulaHash": hash,
