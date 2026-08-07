@@ -27,7 +27,7 @@ Once published to the Zed extension registry:
 ## Debugging
 
 The extension ships the IntelliJ debugger engine as a debug adapter named
-`intellij_debugger` (bound to Kotlin via `languages/kotlin/config.toml`).
+`intellij_debugger` (bound to both Java and Kotlin).
 
 ### 0. Build first (important)
 
@@ -75,19 +75,11 @@ both **Kotlin** (`run main`) and **Java** (`Run MyClass`). Hover the gutter
 next to `fun main` / `main` and pick **Debug** — no configuration needed; the
 main class is inferred from `build.gradle.kts` / `pom.xml`.
 
-> **Java**: the `java` extension sets Java's debugger to its own (`Java`).
-> To debug Java with the IntelliJ engine instead, add to
-> `~/.config/zed/settings.json`:
->
-> ```json
-> "languages": {
->   "Java": {
->     "debuggers": ["intellij_debugger"]
->   }
-> }
-> ```
->
-> This only changes the debugger; Java language support / LSP stays as-is.
+> **Java support**: this extension now provides the Java language definition
+> itself (grammar, highlighting, runnables, tasks) — Java and Kotlin are
+> first-class equals. **Uninstall the Zed `java` extension** so the two don't
+> fight over the Java language. Both languages use the IntelliJ debugger
+> (`intellij_debugger`) automatically.
 
 ### 3. Attach to a running JVM
 
@@ -241,10 +233,9 @@ cargo fmt -- --check
   code works fine.
 - **First launch**: the initial project import can take a minute or two on
   large projects.
-- **Java debugging**: the debug adapter is bound to Kotlin
-  (`languages/kotlin/config.toml`). For Java files, Zed's built-in `java`
-  extension (which provides the Java language definition) owns the debug
-  adapter; this extension provides the Kotlin debug binding.
+- **Java vs `java` extension**: this extension provides its own Java language
+  definition, so uninstall the Zed `java` extension to avoid a conflict over
+  the Java language and its debugger.
 
 ## License
 

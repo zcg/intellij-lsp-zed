@@ -5,16 +5,34 @@ schema_version = 1
 description = "IntelliJ IDEA LSP server for Java and Kotlin"
 repository = "https://github.com/hlucas13/intellij-lsp-zed"
 authors = ["Homero Lucas do Prado"]
-languages = ["languages/kotlin"]
+languages = [
+    "languages/java",
+    "languages/kotlin",
+    "languages/gradle",
+    "languages/gradle-kts",
+    "languages/properties",
+]
 capabilities = []
 
 [lib]
 kind = "Rust"
 version = "0.7.0"
 
+[grammars.groovy]
+repository = "https://github.com/murtaza64/tree-sitter-groovy"
+rev = "deb0dcf8c4544f07564060f6e9b9f6e4b0bfc27d"
+
+[grammars.java]
+repository = "https://github.com/tree-sitter/tree-sitter-java"
+rev = "94703d5a6bed02b98e438d7cad1136c01a60ba2c"
+
 [grammars.kotlin]
 repository = "https://github.com/fwcd/tree-sitter-kotlin"
 rev = "4e909d6cc9ac96b4eaecb3fb538eaca48e9e9ee9"
+
+[grammars.properties]
+repository = "https://github.com/tree-sitter-grammars/tree-sitter-properties"
+rev = "579b62f5ad8d96c2bb331f07d1408c92767531d9"
 
 [language_servers.intellij-server]
 name = "IntelliJ Language Server"
