@@ -172,7 +172,17 @@ fn start_debug_server(workspace_uri: &str) -> Result<u16> {
         .ok_or_else(|| format!("invalid debug server port from IntelliJ server: {result}"))
 }
 
-/// Resolves the path to a JDK `java` executable.
+/// True if `path` looks like a real JDK launcher: `<home>/bin/java` or
+/// `<home>/bin/java.exe`. The IntelliJ debug server derives the JDK home from
+/// this exact shape and rejects anything else (e.g. a bare `java` on `$PATH`).
+fn looks_like_jdk_java(path: &str) -> bool {
+    let norm = path.replace('\\', "/");
+    let stem = norm.rsplit('/').next().unwrap_or("");
+    (stem == "java" || stem == "java.exe") && norm.contains("/bin/")
+}
+
+/// Resolves the path to a JDK `java` executable, returning `None` when no
+/// *real* JDK launcher can be found.
 ///
 /// Priority:
 /// 1. `worktree.which("java")` — a `java` on `$PATH` inside the worktree
@@ -180,23 +190,34 @@ fn start_debug_server(workspace_uri: &str) -> Result<u16> {
 ///    the IntelliJ debug server requires to derive the JDK home.
 /// 2. `$JAVA_HOME/bin/java(.exe)` — fallback when `java` is not on `$PATH` or
 ///    no worktree is available (e.g. `dap_config_to_scenario`).
-/// 3. Plain `java` — lets the OS resolve it (the server will then likely fail
-///    to derive a JDK home, but this is the best we can do).
-fn resolve_java_exec(worktree: Option<&Worktree>) -> String {
+///
+/// A bare `"java"` is never returned: the server rejects it with "Cannot
+/// derive JDK home from javaExec 'java' (expected <home>/bin/java)". When
+/// nothing valid is found, `None` lets the server fall back to the project
+/// SDK from the project model instead.
+fn resolve_java_exec(worktree: Option<&Worktree>) -> Option<String> {
     if let Some(worktree) = worktree {
         if let Some(java) = worktree.which("java") {
-            return java;
+            if looks_like_jdk_java(&java) {
+                return Some(java);
+            }
         }
     }
     if let Ok(java_home) = std::env::var("JAVA_HOME") {
         let exe = if cfg!(windows) { "java.exe" } else { "java" };
-        return format!("{}/bin/{}", java_home.trim_end_matches(['/', '\\']), exe);
+        let candidate = format!("{}/bin/{}", java_home.trim_end_matches(['/', '\\']), exe);
+        if std::path::Path::new(&candidate).is_file() {
+            return Some(candidate);
+        }
     }
-    "java".to_string()
+    None
 }
 
-/// Injects a `javaExec` into a launch debug configuration if it's missing.
-/// The IntelliJ debug server rejects launch requests without it.
+/// Injects a `javaExec` into a launch debug configuration if it's missing and
+/// a real JDK launcher can be resolved. The IntelliJ debug server rejects
+/// launch requests without `javaExec`, but also rejects a bare `java` — so
+/// nothing is injected when no `<home>/bin/java` path is found (the server
+/// then uses the project SDK).
 fn inject_java_exec(config: &mut serde_json::Value, worktree: Option<&Worktree>) {
     if config.get("request").and_then(serde_json::Value::as_str) != Some("launch") {
         return;
@@ -204,7 +225,9 @@ fn inject_java_exec(config: &mut serde_json::Value, worktree: Option<&Worktree>)
     if config.get("javaExec").is_some() {
         return;
     }
-    config["javaExec"] = serde_json::Value::String(resolve_java_exec(worktree));
+    if let Some(java) = resolve_java_exec(worktree) {
+        config["javaExec"] = serde_json::Value::String(java);
+    }
 }
 
 /// Tries to infer the fully-qualified main class from common build files, so
@@ -665,13 +688,16 @@ impl Extension for IntelliJLspExtension {
 
         let mut config_json: serde_json::Value = serde_json::from_str(&config.config)
             .map_err(|e| format!("Invalid JSON configuration: {e}"))?;
-        // Inject javaExec (from worktree/PATH/JAVA_HOME) so the launch is not
-        // rejected with "launch arguments missing 'javaExec'".
-        inject_java_exec(&mut config_json, Some(worktree));
 
         // Mirror the official VS Code extension's `resolveLaunchConfig` flow:
         // ask the server to resolve the classpath, javaExec and working dir
         // from the project model, so the user doesn't have to configure them.
+        //
+        // This must run BEFORE any local javaExec injection: the server
+        // resolves the project SDK's real `<home>/bin/java` path, while a
+        // locally-injected guess (e.g. the bare name "java" when Zed's process
+        // can't see `$PATH`/`$JAVA_HOME`) would shadow it and make the server
+        // fail with "Cannot derive JDK home from javaExec".
         let main_class = config_json
             .get("mainClass")
             .and_then(serde_json::Value::as_str)
@@ -687,6 +713,12 @@ impl Extension for IntelliJLspExtension {
                 ));
             }
         }
+
+        // Fallback: if the server didn't provide a javaExec, inject one from
+        // worktree/PATH/JAVA_HOME so the launch is not rejected with "launch
+        // arguments missing 'javaExec'". Only a real `<home>/bin/java` path is
+        // injected — never a bare "java".
+        inject_java_exec(&mut config_json, Some(worktree));
 
         Ok(DebugAdapterBinary {
             command: None,
@@ -934,22 +966,46 @@ mod tests {
     }
 
     #[test]
+    fn test_looks_like_jdk_java() {
+        assert!(looks_like_jdk_java("D:/jdk/bin/java.exe"));
+        assert!(looks_like_jdk_java("D:\\jdk\\bin\\java.exe"));
+        assert!(looks_like_jdk_java("/usr/lib/jvm/java-17/bin/java"));
+        assert!(!looks_like_jdk_java("java"));
+        assert!(!looks_like_jdk_java("C:/apps/java"));
+        assert!(!looks_like_jdk_java("C:/apps/bin/javac.exe"));
+    }
+
+    #[test]
     fn test_inject_java_exec_launch() {
-        // Launch config without javaExec gets it injected. The exact value
-        // depends on the environment (worktree / JAVA_HOME); assert it's
-        // non-empty and ends with the java binary name.
+        // Launch config without javaExec. Either no JDK is discoverable
+        // (javaExec stays absent — the server falls back to the project SDK),
+        // or a real <home>/bin/java path is injected. Never a bare "java".
         let mut config = serde_json::json!({
             "request": "launch",
             "mainClass": "MainKt",
             "cwd": "/proj"
         });
         inject_java_exec(&mut config, None);
-        let java = config
-            .get("javaExec")
-            .and_then(serde_json::Value::as_str)
-            .unwrap();
-        assert!(!java.is_empty());
-        assert!(java.ends_with("java") || java.ends_with("java.exe"));
+        if let Some(java) = config.get("javaExec").and_then(serde_json::Value::as_str) {
+            assert!(looks_like_jdk_java(java), "unexpected javaExec: {java}");
+        }
+    }
+
+    #[test]
+    fn test_inject_java_exec_never_bare_java() {
+        // Even with no worktree and no JAVA_HOME, the config must never end up
+        // with the bare name "java" — the IntelliJ server rejects it with
+        // "Cannot derive JDK home from javaExec".
+        let mut config = serde_json::json!({
+            "request": "launch",
+            "mainClass": "MainKt"
+        });
+        inject_java_exec(&mut config, None);
+        let injected = config.get("javaExec").and_then(serde_json::Value::as_str);
+        assert!(
+            injected.is_none_or(|j| j != "java"),
+            "must not inject bare \"java\""
+        );
     }
 
     #[test]
@@ -980,10 +1036,13 @@ mod tests {
 
     #[test]
     fn test_resolve_java_exec_from_java_home() {
-        // Without a worktree, resolve from JAVA_HOME (or fall back to "java").
-        // We can't rely on JAVA_HOME being set in CI, so just assert it's non-empty.
+        // Without a worktree, resolve from JAVA_HOME (or None when no JDK is
+        // discoverable). We can't rely on JAVA_HOME being set in CI, so just
+        // assert the result is either None or a real <home>/bin/java path.
         let resolved = resolve_java_exec(None);
-        assert!(!resolved.is_empty());
+        if let Some(java) = resolved {
+            assert!(looks_like_jdk_java(&java), "unexpected javaExec: {java}");
+        }
     }
 
     #[test]
