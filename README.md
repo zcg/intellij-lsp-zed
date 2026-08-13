@@ -45,7 +45,7 @@ Once published to the Zed extension registry:
 
 1. Clone the repository:
    ```sh
-   git clone <your-fork-url>/intellij-lsp-zed.git
+   git clone https://github.com/zcg/intellij-lsp-zed.git
    ```
 2. In Zed: `Cmd+Shift+P` → `zed: install dev extension`, select the cloned
    folder.
