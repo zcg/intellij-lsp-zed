@@ -2,8 +2,8 @@ name: Monitor extension health
 
 on:
   schedule:
-    # Weekly on Monday at 9am UTC
-    - cron: '0 9 * * 1'
+    # The 1st and 15th of each month.
+    - cron: '0 9 1,15 * *'
   workflow_dispatch:
 
 permissions:
@@ -15,64 +15,99 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Reproduce extension runtime logic
+      - name: Verify pinned server and check for updates
         id: check
         run: |
           set -e
-          TMP=$(mktemp -d)
-          cd "$TMP"
+          # Developer tooling only — NOT the extension at runtime.
+          #
+          # The extension NEVER queries the Open VSX API.  This CI workflow
+          # queries it *once every 2 weeks* (a single request from the
+          # maintainer's CI) purely to detect when JetBrains publishes a new
+          # build, so the maintainer can bump the pins.  This is the same
+          # traffic as a human opening the Open VSX web page in a browser
+          # once every 2 weeks — not bulk, not automated per-user-install.
+          echo "== Fetch Open VSX API (maintainer tooling, 1 req/2 weeks) =="
+          META=$(curl -fsSL --max-time 60 "https://open-vsx.org/api/JetBrains/intellij-server/latest")
+          if [ -z "$META" ]; then
+            echo "FAILED: Open VSX API returned empty response"
+            exit 1
+          fi
 
-          echo "== Step 1-4: For each platform, verify the full download chain =="
-          # The extension resolves the platform via `openvsx_platform()` and
-          # requests the platform-specific endpoint — NOT `/latest`, which
-          # defaults to `darwin-arm64`. Verify every published platform so a
-          # missing build is caught before users hit it.
-          for PLATFORM in win32-x64 win32-arm64 linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
-            echo "---- Platform: $PLATFORM ----"
+          # Extract the *extension* version (the vsix wrapper version).
+          NEWEST=$(python3 -c "
+            import json, sys
+            m = json.loads(sys.stdin.read())
+            print(m.get('version', ''))
+          " <<< "$META")
+          if [ -z "$NEWEST" ]; then
+            echo "FAILED: could not parse version from API response"
+            echo "Raw response (truncated): ${META:0:500}"
+            exit 1
+          fi
 
-            echo "== Fetch Open VSX API =="
-            curl -fsSL -o "meta-$PLATFORM.json" "https://open-vsx.org/api/JetBrains/intellij-server/$PLATFORM/latest" \
-              || { echo "FAILED: Open VSX API unreachable for $PLATFORM"; exit 1; }
-            VSIX_URL=$(python3 -c "
-import json
-m = json.load(open('meta-$PLATFORM.json'))
-print(m.get('files', {}).get('download', '') or m.get('download', ''))
-" )
-            [ -n "$VSIX_URL" ] || { echo "FAILED: no VSIX download URL for $PLATFORM"; exit 1; }
-            echo "VSIX URL: $VSIX_URL"
+          # The pinned *server* version lives in server-artifacts.json
+          # (previously was a constant in src/lib.rs).
+          PINNED=$(python3 -c "import json; print(json.load(open('server-artifacts.json'))['version'])")
+          if [ -z "$PINNED" ]; then
+            echo "WARNING: could not parse version from server-artifacts.json"
+            echo "version=unknown" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
-            echo "== Download and extract VSIX =="
-            curl -fsSL -o "vsix-$PLATFORM.zip" "$VSIX_URL" || { echo "FAILED: VSIX download for $PLATFORM"; exit 1; }
-            rm -rf "vsix-$PLATFORM" && unzip -q "vsix-$PLATFORM.zip" -d "vsix-$PLATFORM" || { echo "FAILED: VSIX extraction for $PLATFORM"; exit 1; }
-            [ -f "vsix-$PLATFORM/extension/server-bundle.json" ] || { echo "FAILED: server-bundle.json missing for $PLATFORM"; exit 1; }
+          echo "Pinned server version: $PINNED"
+          echo "Newest vsix version : $NEWEST"
 
-            echo "== Read server-bundle.json =="
-            SERVER_URL=$(python3 -c "
-import json
-b = json.load(open('vsix-$PLATFORM/extension/server-bundle.json'))
-print(b['url'])
-" ) || { echo "FAILED: bad server-bundle.json for $PLATFORM"; exit 1; }
-            VERSION=$(python3 -c "
-import json
-b = json.load(open('vsix-$PLATFORM/extension/server-bundle.json'))
-print(b['version'])
-" )
-            echo "Server version: $VERSION"
-            echo "Server URL: $SERVER_URL"
+          echo "pinned=$PINNED" >> "$GITHUB_OUTPUT"
+          echo "newest=$NEWEST" >> "$GITHUB_OUTPUT"
 
-            echo "== Verify server URL responds =="
-            STATUS=$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 60 "$SERVER_URL")
+          # Verify the first pinned JetBrains CDN URL is still reachable.
+          URL=$(python3 -c "import json; d=json.load(open('server-artifacts.json')); print(next(iter(d['platforms'].values()))['url'])")
+          if [ -n "$URL" ]; then
+            echo "== Verify pinned CDN URL =="
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' -I -L --max-time 60 "$URL")
             echo "HTTP status: $STATUS"
-            [ "$STATUS" = "200" ] || { echo "FAILED: server URL for $PLATFORM returned $STATUS"; exit 1; }
+            [ "$STATUS" = "200" ] || [ "$STATUS" = "302" ] || {
+              echo "FAILED: pinned CDN URL returned $STATUS"
+              exit 1
+            }
+          fi
 
-            # Use the last platform's version as the health-check version.
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-          done
+      - name: Open issue if a newer build is available
+        if: steps.check.outputs.pinned != '' && steps.check.outputs.pinned != 'unknown' && steps.check.outputs.newest != '' && steps.check.outputs.newest != steps.check.outputs.pinned
+        env:
+          PINNED: ${{ steps.check.outputs.pinned }}
+          NEWEST: ${{ steps.check.outputs.newest }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'update-available'
+            });
+            if (issues.data.length > 0) {
+              console.log('Update issue already open — skipping.');
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🆕 New IntelliJ LSP server build available',
+              body: `A newer JetBrains vsix release is available: **${process.env.NEWEST}** (currently pinned server version: **${process.env.PINNED}**).
 
-          echo "== All checks passed =="
+            This usually means a new server bundle is available.  Update the pins in \`src/lib.rs\`:
+            - Download the new vsix for each platform from the Open VSX page (browser, one-off)
+            - Extract \`extension/server-bundle.json\` from each and copy the \`url\`, \`version\`, and \`sha256\` into \`platform_artifact()\`
+            - Rebuild \`extension.wasm\`, bump \`extension.toml\` / \`Cargo.toml\`, and release
+
+            See README → "Updating the pinned server".`,
+              labels: ['update-available']
+            });
 
       - name: Close stale health issues
-        if: steps.check.outputs.version != ''
+        if: success() && steps.check.outputs.pinned != ''
         uses: actions/github-script@v7
         with:
           script: |
@@ -115,20 +150,11 @@ print(b['version'])
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: '⚠️ Extension health check failed — server download chain broken',
-              body: `The weekly health check failed. This means the extension will not be able to auto-download the IntelliJ LSP server.
+              title: '⚠️ Extension health check failed',
+              body: `The biweekly health check failed.  This means either the Open VSX API is unreachable/empty, the response format changed, or the pinned JetBrains CDN URL is dead.
 
-            **Possible causes:**
-            - JetBrains changed the Open VSX API response format
-            - The VSIX structure changed (server-bundle.json moved/renamed)
-            - The JetBrains CDN URL pattern changed
-            - Server bundle requires a different download method
+            Check the failing step in the workflow run for the exact error.
 
-            **Run the failing step locally to see the error:**
-            \`\`\`sh
-            curl -sL "https://open-vsx.org/api/JetBrains/intellij-server/win32-x64/latest"
-            \`\`\`
-
-            **Fix:** update \`src/lib.rs\` accordingly, rebuild, and release.`,
+            If the server download chain is broken, update the pins in \`server-artifacts.json\` (\`platform_artifact()\` for each platform).  See README → "Updating the pinned server".`,
               labels: ['extension-broken']
             });

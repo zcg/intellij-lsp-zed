@@ -1,0 +1,89 @@
+name: Auto-update pinned server
+
+on:
+  schedule:
+    # The 1st and 15th of each month — stable ~13–17 day interval.
+    - cron: '0 10 1,15 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for new JetBrains vsix release
+        id: check
+        run: |
+          set -e
+          echo "== Fetch Open VSX API (maintainer tooling, 1 req/2 weeks) =="
+          META=$(curl -fsSL --max-time 60 "https://open-vsx.org/api/JetBrains/intellij-server/latest")
+          NEWEST=$(python3 -c "import json,sys; print(json.load(sys.stdin)['version'])" <<< "$META")
+          CURRENT=$(python3 -c "import json; print(json.load(open('server-artifacts.json'))['vsix_version'])")
+          echo "Newest vsix : $NEWEST"
+          echo "Current pin : $CURRENT"
+          if [ "$NEWEST" = "$CURRENT" ]; then
+            echo "Pin is current — nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "New version available — proceeding with auto-update."
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "newest=$NEWEST" >> "$GITHUB_OUTPUT"
+
+      - name: Download vsixes and update server-artifacts.json
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          python3 scripts/update-artifacts.py "${{ steps.check.outputs.newest }}"
+
+      - name: Install Rust
+        if: steps.check.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+
+      - name: Cache dependencies
+        if: steps.check.outputs.changed == 'true'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Rebuild extension
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          cargo build --release --target wasm32-wasip2
+          cp target/wasm32-wasip2/release/intellij_lsp_zed.wasm extension.wasm
+
+      - name: Setup Node.js
+        if: steps.check.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Bump version
+        if: steps.check.outputs.changed == 'true'
+        id: bump
+        run: |
+          NEW_VER=$(python3 scripts/bump-version.py)
+          echo "New version: $NEW_VER"
+          echo "version=$NEW_VER" >> "$GITHUB_OUTPUT"
+
+      - name: Update lockfile
+        if: steps.check.outputs.changed == 'true'
+        run: cargo generate-lockfile
+
+      - name: Run tests
+        if: steps.check.outputs.changed == 'true'
+        run: cargo test
+
+      - name: Commit and push
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add server-artifacts.json extension.wasm extension.toml Cargo.toml Cargo.lock package.json package-lock.json scripts/
+          git commit -m "chore: auto-update pinned server to ${{ steps.check.outputs.newest }} (v${{ steps.bump.outputs.version }})" || echo "No changes to commit"
+          git push origin main
+          git tag -a "v${{ steps.bump.outputs.version }}" -m "v${{ steps.bump.outputs.version }} — auto-updated server pin"
+          git push origin "v${{ steps.bump.outputs.version }}"

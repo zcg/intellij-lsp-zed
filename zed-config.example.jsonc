@@ -1,15 +1,57 @@
-// Optional Zed configuration — add these lines to ~/.config/zed/settings.json
-// if you want to use the IntelliJ server for Java/Kotlin instead of Zed's
-// built-in servers. Both Java and Kotlin use the IntelliJ debugger out of the
-// box (no debuggers override needed).
+// Zed configuration for the IntelliJ LSP extension.
+// Add these lines to ~/.config/zed/settings.json as needed.
 //
-// IMPORTANT: uninstall the Zed `java` extension first — this extension now
+// Full example: EULA accepted, 4 GB heap, data sharing off, region set,
+// monorepo sub-projects scoped, built-in servers disabled.
+//
+// IMPORTANT: uninstall the Zed `java` extension first — this extension
 // provides the Java language definition itself, so having both would conflict.
-//
-// The extension is fully self-contained: it downloads the IntelliJ LSP server
-// automatically on first launch. No other setup needed.
-
+// Both Java and Kotlin use the IntelliJ debugger (intellij_debugger)
+// automatically, no debugger override needed.
 {
+  "lsp": {
+    "intellij-server": {
+      "settings": {
+        // REQUIRED — read the JetBrains EULA first:
+        // https://www.jetbrains.com/legal/docs/toolbox/user/
+        "accept_jetbrains_eula": true,
+
+        // JVM options for the server process (default heap is 2 GB).
+        "intellij.additionalJvmArgs": ["-Xmx4g", "-XX:+UseG1GC"],
+
+        // Data sharing opt-in (defaults to none — set explicitly or omit).
+        "intellij.dataSharing": "none",
+
+        // Region for JetBrains terms / data processing.
+        "intellij.region": "EU",
+
+        // Global build tool (gradle / maven / bazel / "" to disable all).
+        // Omit to let the server auto-detect (it prompts on conflict).
+        "intellij.buildTool": "gradle",
+
+        // Monorepo: scope import to specific sub-projects.
+        "intellij.projects": [
+          {
+            "type": "gradle",
+            "path": "file:///absolute/path/to/project/build.gradle.kts",
+          },
+          {
+            "type": "maven",
+            "path": "file:///absolute/path/to/another-project/pom.xml",
+          },
+        ],
+
+        // Optional JDK home for symbol resolution.
+        // "intellij.jdkForSymbolResolution": "/path/to/jdk",
+
+        // Manual server path — uncomment and delete the auto-download config
+        // above if you prefer to manage the server yourself:
+        // "server_path": "/absolute/path/to/intellij-server/bin/intellij-server"
+      },
+    },
+  },
+
+  // Use IntelliJ for Java/Kotlin instead of Zed's built-in servers.
   "languages": {
     "Java": {
       "language_servers": ["intellij-server", "!jdtls"],
