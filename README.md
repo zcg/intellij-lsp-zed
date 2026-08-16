@@ -524,9 +524,13 @@ manually:
 
 ## Caveats
 
-- **Library sources**: `Cmd+Click` into JDK/Spring classes won't open their
-  source (Zed doesn't support `jar://` URIs yet). Navigation within your own
-  code works fine.
+- **Third-party & JDK sources**: `Cmd+Click` / goto-definition into JDK and
+  third-party library classes **works** — the Rust bridge intercepts the
+  server's `jar://` URIs and extracts the source to a local cache
+  (`<workdir>/sources/`) that Zed opens. Sources come from the source files
+  bundled inside the jar, the sibling `<artifact>-<version>-sources.jar`, or
+  the JDK's `src.zip`. If none of those exist (a jar ships no sources), the
+  jump falls back to the server's own response and may not open.
 - **First launch**: the initial project import can take a minute or two on
   large projects.
 - **Java vs `java` extension**: this extension provides its own Java language

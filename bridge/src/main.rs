@@ -21,6 +21,7 @@
 mod dap;
 mod framing;
 mod http;
+mod jars;
 mod lsp;
 
 use std::collections::HashMap;
@@ -61,6 +62,8 @@ pub struct Shared {
     pub workspace_uri: String,
     pub workdir: String,
     pub log: Mutex<fs::File>,
+    /// jar:// → 本地源码提取缓存(JDK / 第三方库跳转)。
+    pub jars: jars::Cache,
 }
 
 fn main() {
@@ -119,6 +122,7 @@ fn main() {
         workspace_uri: workspace_uri.clone(),
         workdir: workdir.clone(),
         log: Mutex::new(log),
+        jars: jars::Cache::new(&workdir),
     });
 
     // Server stderr → log file (how we diagnose server crashes).

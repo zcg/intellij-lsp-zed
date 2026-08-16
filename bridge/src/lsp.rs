@@ -2,7 +2,7 @@
 //! requests, and notifications destined for Zed.
 
 use crate::framing::encode_frame;
-use crate::{PendingRequest, Shared, REQUEST_TIMEOUT};
+use crate::{jars, PendingRequest, Shared, REQUEST_TIMEOUT};
 use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
@@ -83,7 +83,7 @@ pub fn handle_server_message(shared: &Shared, body: &[u8]) {
                 // The server wants to ask the user something (e.g. which build
                 // tool to use). Forward it to Zed, which renders the prompt and
                 // replies. Intercepting it would swallow the prompt.
-                forward_to_zed(&msg);
+                forward_to_zed(shared, &msg);
             } else {
                 // Acknowledge other requests with a null result.
                 let reply = serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": null });
@@ -95,12 +95,16 @@ pub fn handle_server_message(shared: &Shared, body: &[u8]) {
         }
     }
 
-    // Notification or a response meant for Zed — forward unchanged.
-    forward_to_zed(&msg);
+    // Notification or a response meant for Zed — forward (rewriting any
+    // `jar://` source URIs into local files so definition jumps into JDK and
+    // third-party libraries open in Zed).
+    forward_to_zed(shared, &msg);
 }
 
-fn forward_to_zed(msg: &serde_json::Value) {
-    let mut out = std::io::stdout().lock();
-    let _ = out.write_all(&encode_frame(msg.to_string().as_bytes()));
-    let _ = out.flush();
+fn forward_to_zed(shared: &Shared, msg: &serde_json::Value) {
+    let mut out = msg.clone();
+    jars::rewrite_jar_uris(&mut out, &shared.jars);
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(&encode_frame(out.to_string().as_bytes()));
+    let _ = stdout.flush();
 }
