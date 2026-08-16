@@ -409,6 +409,30 @@ fn workspace_uri(root: &str) -> String {
     }
 }
 
+/// Normalizes a worktree root to the project *directory*.
+///
+/// Zed roots a worktree at a single *file* when the user opens a file directly
+/// (e.g. `zed src/main/kotlin/Main.kt`) instead of its folder. The extension
+/// needs the directory for everything downstream: the workspace URI, the
+/// bridge's port-file key, `start_debug_server` args, and the `cwd` fallback.
+/// A file path breaks all of them — the bridge would write its port file
+/// under the file's hex while the extension looks it up under the directory's
+/// hex, yielding "failed to read bridge port file".
+fn normalize_project_root(root: &str) -> String {
+    let p = std::path::Path::new(root);
+    if p.is_file() || looks_like_source_file(root) {
+        p.parent()
+            .map(|parent| parent.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.to_string())
+    } else {
+        root.to_string()
+    }
+}
+
+fn worktree_root_dir(worktree: &Worktree) -> String {
+    normalize_project_root(&worktree.root_path())
+}
+
 /// Hex-encodes a string the same way the Rust bridge does (it uses the hex
 /// encoding of the workspace URI to name its port file).
 fn string_to_hex(s: &str) -> String {
@@ -931,9 +955,18 @@ impl Extension for IntelliJLspExtension {
 
         let binary_path = self.language_server_binary_path(language_server_id, &settings)?;
         let bridge_path = self.bridge_binary_path()?;
-        let root = worktree.root_path();
+        // Zed may root the worktree at a single file (user opened the file
+        // directly); normalize to the project directory so the bridge's
+        // port-file key, `start_debug_server` args and the `cwd` fallback all
+        // agree on the same URI.
+        let root = worktree_root_dir(worktree);
         let ws_uri = workspace_uri(&root);
         self.cached_workspace = Some(root.clone());
+
+        // Drop a stale port file from a previously killed bridge — otherwise
+        // the extension could read a dead port and report "is the language
+        // server running?" even though a fresh bridge is about to start.
+        let _ = fs::remove_file(format!("proxy/{}", string_to_hex(&ws_uri)));
 
         // The extension's wasm runs with its working directory set to the
         // extension workdir (e.g. .../extensions/work/intellij-lsp), whereas
@@ -985,7 +1018,7 @@ impl Extension for IntelliJLspExtension {
             return Err(EULA_GATE_MESSAGE.to_string());
         }
 
-        self.cached_workspace = Some(worktree.root_path());
+        self.cached_workspace = Some(worktree_root_dir(worktree));
 
         let mut init = serde_json::json!({
             "eulaHash": self.eula_hash_for(&settings),
@@ -1001,7 +1034,7 @@ impl Extension for IntelliJLspExtension {
             // The real extension sends a per-worktree-folder URI → buildTool
             // mapping.  We have a single worktree, so we map the root path
             // to a `file://` URI.
-            let uri = workspace_uri(&worktree.root_path());
+            let uri = workspace_uri(&worktree_root_dir(worktree));
             init["buildTools"] = serde_json::json!({ uri: build_tool });
         }
         if let Some(ref jdk) = settings.jdk_for_symbol_resolution {
@@ -1024,7 +1057,7 @@ impl Extension for IntelliJLspExtension {
             ));
         }
 
-        let workspace = worktree.root_path();
+        let workspace = worktree_root_dir(worktree);
         let ws_uri = workspace_uri(&workspace);
 
         // Ask the IntelliJ server to start its DAP server; we connect to it
@@ -1461,6 +1494,29 @@ mod tests {
         assert_eq!(workspace_uri("/Users/zcg/proj"), "file:///Users/zcg/proj");
         // Already a URI — unchanged.
         assert_eq!(workspace_uri("file:///D:/proj"), "file:///D:/proj");
+    }
+
+    #[test]
+    fn test_normalize_project_root_file() {
+        // A worktree rooted at a single file normalizes to its parent dir.
+        assert_eq!(
+            normalize_project_root(r"D:\Projects\javaprojects\kkkkt\src\main\kotlin\Main.kt"),
+            r"D:\Projects\javaprojects\kkkkt\src\main\kotlin"
+        );
+        assert_eq!(
+            normalize_project_root("/home/user/proj/src/Main.kt"),
+            "/home/user/proj/src"
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_root_dir_unchanged() {
+        // A directory root passes through untouched.
+        assert_eq!(
+            normalize_project_root(r"D:\Projects\javaprojects\kkkkt"),
+            r"D:\Projects\javaprojects\kkkkt"
+        );
+        assert_eq!(normalize_project_root("/home/user/proj"), "/home/user/proj");
     }
 
     #[test]
