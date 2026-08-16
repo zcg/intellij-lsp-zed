@@ -101,9 +101,9 @@ pub fn handle_server_message(shared: &Shared, body: &[u8]) {
     forward_to_zed(shared, &msg);
 }
 
-/// 转发消息给 Zed。定义/悬停等响应里若含 `jar://` / `jrt://` URI(第三方库
-/// 与 JDK 源码),先尝试本地提取改写为 `file://`;本地拿不到的交给后台 worker
-/// 向 IntelliJ 服务器要文本(`workspace/textDocumentContent`)后再转发。
+/// 转发消息给 Zed。定义/悬停等响应里若含 `jar://` / `jrt://` / `file://...!/`
+/// 虚拟源 URI(第三方库与 JDK 源码),直接从 jar/zip 提取源码改写为 `file://`
+/// 再转发;提取失败的原样转发(Zed 打不开,但消息不丢)。
 fn forward_to_zed(shared: &Shared, msg: &serde_json::Value) {
     let mut uris = Vec::new();
     jars::collect_virtual_uris(msg, &mut uris);
@@ -119,25 +119,23 @@ fn forward_to_zed(shared: &Shared, msg: &serde_json::Value) {
     .ok();
 
     let mut out = msg.clone();
-    let mut pending = Vec::new();
     for uri in &uris {
-        if let Some(cached) = shared.jars.cached(uri) {
-            jars::replace_uri(&mut out, uri, &cached);
+        if let Some(file_uri) = shared.jars.rewrite_local(uri) {
+            jars::replace_uri(&mut out, uri, &file_uri);
+            writeln!(
+                shared.log.lock().unwrap(),
+                "[sources] extracted {uri} -> {file_uri}"
+            )
+            .ok();
         } else {
-            pending.push(uri.clone());
+            writeln!(
+                shared.log.lock().unwrap(),
+                "[sources] no local source for {uri}"
+            )
+            .ok();
         }
     }
-
-    if pending.is_empty() {
-        write_stdout(&out);
-    } else {
-        // 入队,worker 拿到文本、落盘、改写后再转发(保持顺序)。
-        shared
-            .rewrite_queue
-            .lock()
-            .unwrap()
-            .push_back((out, pending));
-    }
+    write_stdout(&out);
 }
 
 fn write_stdout(msg: &serde_json::Value) {
