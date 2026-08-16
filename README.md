@@ -526,11 +526,12 @@ manually:
 
 - **Third-party & JDK sources**: `Cmd+Click` / goto-definition into JDK and
   third-party library classes **works** — the Rust bridge intercepts the
-  server's `jar://` URIs and extracts the source to a local cache
-  (`<workdir>/sources/`) that Zed opens. Sources come from the source files
-  bundled inside the jar, the sibling `<artifact>-<version>-sources.jar`, or
-  the JDK's `src.zip`. If none of those exist (a jar ships no sources), the
-  jump falls back to the server's own response and may not open.
+  server's `jar://` / `jrt://` URIs and fetches the source text from the
+  IntelliJ server itself (`workspace/textDocumentContent`, the same mechanism
+  the official VS Code extension uses), writes it to a local cache
+  (`<workdir>/sources/`) that Zed opens, and remembers the mapping. If the
+  server can't provide text, the bridge falls back to extracting from the
+  jar's bundled sources, a sibling `-sources.jar`, or the JDK's `src.zip`.
 - **First launch**: the initial project import can take a minute or two on
   large projects.
 - **Java vs `java` extension**: this extension provides its own Java language

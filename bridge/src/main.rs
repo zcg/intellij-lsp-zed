@@ -24,7 +24,7 @@ mod http;
 mod jars;
 mod lsp;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -64,6 +64,9 @@ pub struct Shared {
     pub log: Mutex<fs::File>,
     /// jar:// → 本地源码提取缓存(JDK / 第三方库跳转)。
     pub jars: jars::Cache,
+    /// 等待 worker 从服务器取文本后转发的消息队列
+    /// `(原始消息, 其中待展开的 jar:// jrt:// URI 列表)`。
+    pub rewrite_queue: Mutex<VecDeque<(serde_json::Value, Vec<String>)>>,
 }
 
 fn main() {
@@ -123,6 +126,7 @@ fn main() {
         workdir: workdir.clone(),
         log: Mutex::new(log),
         jars: jars::Cache::new(&workdir),
+        rewrite_queue: Mutex::new(VecDeque::new()),
     });
 
     // Server stderr → log file (how we diagnose server crashes).
@@ -186,6 +190,13 @@ fn main() {
         thread::spawn(move || dap::serve(dap_listener, shared));
     }
 
+    // jar:// / jrt:// 源码展开 worker:本地提取不到时,向服务器要文本
+    // (`workspace/textDocumentContent`),落盘后改写为 file:// 再转发给 Zed。
+    {
+        let shared = shared.clone();
+        thread::spawn(move || rewrite_worker(shared));
+    }
+
     // Main loop: server stdout → route.
     let mut frame = framing::FrameReader::new();
     let mut buf = [0u8; 8192];
@@ -217,4 +228,48 @@ fn cleanup_port_file(workdir: &str, workspace_uri: &str) {
         .collect();
     let port_file = Path::new(workdir).join("proxy").join(hex);
     let _ = fs::remove_file(port_file);
+}
+
+/// 处理 `rewrite_queue`:对每个 jar:// / jrt:// URI 向 IntelliJ 服务器发
+/// `workspace/textDocumentContent` 请求拿源码文本,写入本地缓存文件,把消息
+/// 里的 URI 改写为 `file://` 后转发给 Zed。服务器也拿不到时按原样转发
+/// (Zed 打不开,但消息不丢)。
+fn rewrite_worker(shared: Arc<Shared>) {
+    loop {
+        let item = shared.rewrite_queue.lock().unwrap().pop_front();
+        let Some((mut msg, uris)) = item else {
+            thread::sleep(Duration::from_millis(30));
+            continue;
+        };
+        for uri in &uris {
+            let resp = lsp::send_lsp_request(
+                &shared,
+                "workspace/textDocumentContent",
+                serde_json::json!({ "uri": uri }),
+            );
+            if let Some(text) = resp
+                .get("result")
+                .and_then(|r| r.get("text"))
+                .and_then(|t| t.as_str())
+            {
+                if let Some(target) = jars::cache_target_for(uri, &shared.workdir) {
+                    let written = target
+                        .parent()
+                        .map(|p| fs::create_dir_all(p).is_ok())
+                        .unwrap_or(false)
+                        && fs::write(&target, text).is_ok();
+                    if written {
+                        let file_uri = jars::path_to_file_uri(&target);
+                        jars::replace_uri(&mut msg, uri, &file_uri);
+                        shared.jars.remember(uri, file_uri);
+                        continue;
+                    }
+                }
+            }
+            // 服务器拿不到 → 保留原 uri,消息仍按原样转发。
+        }
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(&framing::encode_frame(msg.to_string().as_bytes()));
+        let _ = stdout.flush();
+    }
 }

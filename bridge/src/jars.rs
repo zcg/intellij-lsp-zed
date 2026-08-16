@@ -43,20 +43,28 @@ impl Cache {
         }
     }
 
-    /// 把 `jar://` URI 改写成本地 `file://` 路径;无法提取时返回 `None`
-    /// (调用方保留原 URI,不阻塞消息)。
+    /// 是否命中内存缓存。
+    pub fn cached(&self, uri: &str) -> Option<String> {
+        self.mem.lock().ok()?.get(uri).cloned()
+    }
+
+    /// 记录 uri → 本地 file:// 映射(服务器取文本成功后写入,下次直接命中)。
+    pub fn remember(&self, uri: &str, file_uri: String) {
+        if let Ok(mut mem) = self.mem.lock() {
+            mem.insert(uri.to_string(), file_uri);
+        }
+    }
+
+    /// 尝试把 `jar://` URI 改写成本地 `file://` 路径(仅本地可提取的情况;
+    /// `jrt://` 与提取失败返回 `None`,由调用方走"问服务器要文本")。
     pub fn rewrite(&self, uri: &str) -> Option<String> {
-        if let Ok(mem) = self.mem.lock() {
-            if let Some(cached) = mem.get(uri) {
-                return Some(cached.clone());
-            }
+        if let Some(cached) = self.cached(uri) {
+            return Some(cached);
         }
         let (jar, entry) = parse_jar_uri(uri)?;
         let target = self.extract(&jar, &entry)?;
         let file_uri = path_to_file_uri(&target);
-        if let Ok(mut mem) = self.mem.lock() {
-            mem.insert(uri.to_string(), file_uri.clone());
-        }
+        self.remember(uri, file_uri.clone());
         Some(file_uri)
     }
 
@@ -144,7 +152,7 @@ fn hex_string(s: &str) -> String {
     s.as_bytes().iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-fn path_to_file_uri(p: &Path) -> String {
+pub fn path_to_file_uri(p: &Path) -> String {
     let s = p.to_string_lossy().replace('\\', "/");
     if s.starts_with('/') {
         format!("file://{s}")
@@ -153,25 +161,61 @@ fn path_to_file_uri(p: &Path) -> String {
     }
 }
 
-/// 递归改写一条 JSON 消息:所有以 `jar://` 开头的字符串都尝试替换为本地
-/// `file://` 路径(definition/hover/documents 等响应的 uri 字段)。
-pub fn rewrite_jar_uris(value: &mut serde_json::Value, cache: &Cache) {
+/// 是否是需要在 Zed 侧展开的虚拟源 URI(`jar://` 或 JDK 9+ 的 `jrt://`)。
+pub fn is_virtual_uri(uri: &str) -> bool {
+    uri.starts_with("jar://") || uri.starts_with("jrt://")
+}
+
+/// 按原始 URI 计算落盘缓存路径:`sources/<hex(uri)>/<basename>`。
+/// 服务器取文本成功后写入,之后直接打开本地文件。
+pub fn cache_target_for(uri: &str, workdir: &str) -> Option<PathBuf> {
+    let base = uri.rsplit('/').next().filter(|s| !s.is_empty())?;
+    Some(
+        Path::new(workdir)
+            .join("sources")
+            .join(hex_string(uri))
+            .join(base),
+    )
+}
+
+/// 递归收集消息中所有 jar:// / jrt:// 字符串(去重)。
+pub fn collect_virtual_uris(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
         serde_json::Value::String(s) => {
-            if s.starts_with("jar://") {
-                if let Some(file_uri) = cache.rewrite(s) {
-                    *s = file_uri;
-                }
+            if is_virtual_uri(s) && !out.contains(s) {
+                out.push(s.clone());
             }
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                rewrite_jar_uris(item, cache);
+                collect_virtual_uris(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for v in map.values() {
+                collect_virtual_uris(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 把 value 中所有等于 `from` 的字符串替换为 `to`。
+pub fn replace_uri(value: &mut serde_json::Value, from: &str, to: &str) {
+    match value {
+        serde_json::Value::String(s) => {
+            if s == from {
+                *s = to.to_string();
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                replace_uri(item, from, to);
             }
         }
         serde_json::Value::Object(map) => {
             for v in map.values_mut() {
-                rewrite_jar_uris(v, cache);
+                replace_uri(v, from, to);
             }
         }
         _ => {}

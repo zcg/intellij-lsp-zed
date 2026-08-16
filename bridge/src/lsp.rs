@@ -101,10 +101,43 @@ pub fn handle_server_message(shared: &Shared, body: &[u8]) {
     forward_to_zed(shared, &msg);
 }
 
+/// 转发消息给 Zed。定义/悬停等响应里若含 `jar://` / `jrt://` URI(第三方库
+/// 与 JDK 源码),先尝试本地提取改写为 `file://`;本地拿不到的交给后台 worker
+/// 向 IntelliJ 服务器要文本(`workspace/textDocumentContent`)后再转发。
 fn forward_to_zed(shared: &Shared, msg: &serde_json::Value) {
+    let mut uris = Vec::new();
+    jars::collect_virtual_uris(msg, &mut uris);
+    if uris.is_empty() {
+        write_stdout(msg);
+        return;
+    }
+
     let mut out = msg.clone();
-    jars::rewrite_jar_uris(&mut out, &shared.jars);
+    let mut pending = Vec::new();
+    for uri in &uris {
+        if let Some(file_uri) = shared.jars.rewrite(uri) {
+            jars::replace_uri(&mut out, uri, &file_uri);
+        } else if let Some(cached) = shared.jars.cached(uri) {
+            jars::replace_uri(&mut out, uri, &cached);
+        } else {
+            pending.push(uri.clone());
+        }
+    }
+
+    if pending.is_empty() {
+        write_stdout(&out);
+    } else {
+        // 入队,worker 拿到文本、落盘、改写后再转发(保持顺序)。
+        shared
+            .rewrite_queue
+            .lock()
+            .unwrap()
+            .push_back((out, pending));
+    }
+}
+
+fn write_stdout(msg: &serde_json::Value) {
     let mut stdout = std::io::stdout().lock();
-    let _ = stdout.write_all(&encode_frame(out.to_string().as_bytes()));
+    let _ = stdout.write_all(&encode_frame(msg.to_string().as_bytes()));
     let _ = stdout.flush();
 }

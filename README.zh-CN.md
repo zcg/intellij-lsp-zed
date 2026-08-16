@@ -476,11 +476,11 @@ auto-update 工作流 99% 的情况下会处理。手动时需要:
 ## 注意事项(Caveats)
 
 - **第三方库与 JDK 源码**:在 JDK 或第三方库类上 `Cmd+Click` / 转到定义**可以
-  打开源码** —— Rust bridge 会拦截服务器的 `jar://` URI,把源码提取到本地
-  缓存(`<workdir>/sources/`),Zed 即可打开。源码来源依次为:jar 内打包的
-  `.java`、同目录的 `<artifact>-<version>-sources.jar`、JDK 的 `src.zip`。
-  若三者都不存在(该 jar 未发布源码),跳转会回退到服务器的原始响应,可能
-  无法打开。
+  打开源码** —— Rust bridge 会拦截服务器的 `jar://` / `jrt://` URI,向
+  IntelliJ 服务器本身请求源码文本(`workspace/textDocumentContent`,与官方
+  VS Code 扩展同一机制),写入本地缓存(`<workdir>/sources/`)供 Zed 打开,并
+  记住映射。服务器拿不到文本时,bridge 回退为从 jar 内打包源码、同目录
+  `-sources.jar`、或 JDK 的 `src.zip` 提取。
 - **首次启动**:大项目的首次导入可能需要一两分钟。
 - **Java 与 `java` 扩展**:本扩展自带 Java 语言定义,请卸载 Zed 的 `java`
   扩展,避免 Java 语言及其调试器冲突。
