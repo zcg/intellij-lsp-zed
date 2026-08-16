@@ -514,6 +514,37 @@ fn inject_java_exec(config: &mut serde_json::Value, worktree: Option<&Worktree>)
     }
 }
 
+/// True if `path` ends with a common source-file extension.
+///
+/// The IntelliJ server's `resolveWorkingDirectory` can fall back to the source
+/// file's own path (e.g. `.../src/main/kotlin/Main.kt`) when the project model
+/// isn't ready — e.g. right after a debug session ended. A working directory
+/// must be a directory, never a source file, or the JVM launch fails with
+/// "Cannot start a process, the working directory ... does not exist".
+fn looks_like_source_file(path: &str) -> bool {
+    let lower = path.trim_end_matches(['/', '\\']).to_lowercase();
+    [".kt", ".kts", ".java", ".groovy", ".scala", ".class"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+}
+
+/// Ensures a launch config has a sane working directory: never empty, never a
+/// source-file path (which the server may return as a fallback). Falls back to
+/// `workspace_root` — a real directory that always exists. Attach configs are
+/// left untouched.
+fn ensure_launch_cwd(config: &mut serde_json::Value, workspace_root: &str) {
+    if config.get("request").and_then(serde_json::Value::as_str) != Some("launch") {
+        return;
+    }
+    let bad_cwd = match config.get("cwd").and_then(serde_json::Value::as_str) {
+        Some(cwd) => cwd.is_empty() || looks_like_source_file(cwd),
+        None => true,
+    };
+    if bad_cwd {
+        config["cwd"] = serde_json::Value::String(workspace_root.to_string());
+    }
+}
+
 /// Tries to infer the fully-qualified main class from common build files, so
 /// the gutter **Debug** button can start a launch without the user configuring
 /// anything.
@@ -793,7 +824,14 @@ impl IntelliJLspExtension {
                 .get("workingDirectory")
                 .and_then(serde_json::Value::as_str)
             {
-                config["cwd"] = serde_json::Value::String(working_directory.to_string());
+                // The server can fall back to the source file's own path when
+                // the project model isn't ready (e.g. right after a debug
+                // session ended). A working directory must be a directory —
+                // skip file-shaped paths and let the caller fall back to the
+                // workspace root.
+                if !looks_like_source_file(working_directory) {
+                    config["cwd"] = serde_json::Value::String(working_directory.to_string());
+                }
             }
         }
 
@@ -964,6 +1002,13 @@ impl Extension for IntelliJLspExtension {
         // injected — never a bare "java".
         inject_java_exec(&mut config_json, Some(worktree));
 
+        // Final safety net: the working directory must be a real directory.
+        // The server's resolveWorkingDirectory can return the source file's
+        // own path when the project model isn't ready (e.g. on the second
+        // launch right after a debug session ended) — fall back to the
+        // workspace root, which always exists.
+        ensure_launch_cwd(&mut config_json, &workspace);
+
         Ok(DebugAdapterBinary {
             command: None,
             arguments: vec![],
@@ -1035,6 +1080,9 @@ impl Extension for IntelliJLspExtension {
                 }
                 // No worktree is available here; fall back to `$JAVA_HOME`.
                 inject_java_exec(&mut launch_config, None);
+                // Working directory must be a real directory (see
+                // `ensure_launch_cwd`) — fall back to the workspace root.
+                ensure_launch_cwd(&mut launch_config, &workspace);
                 launch_config
             }
             DebugRequest::Attach(attach) => match attach.process_id {
@@ -1429,6 +1477,82 @@ mod tests {
         });
         inject_java_exec(&mut config, None);
         assert!(config.get("javaExec").is_none());
+    }
+
+    #[test]
+    fn test_looks_like_source_file() {
+        // Source files — the server may return these as a bogus working dir.
+        assert!(looks_like_source_file(r"D:\proj\src\main\kotlin\Main.kt"));
+        assert!(looks_like_source_file(r"D:\proj\src\main\kotlin\Main.kt/"));
+        assert!(looks_like_source_file("D:/proj/src/App.java"));
+        assert!(looks_like_source_file("/proj/App.groovy"));
+        assert!(looks_like_source_file("Main.scala"));
+        assert!(looks_like_source_file("build/classes/Main.class"));
+        // Real directories and non-source paths are fine.
+        assert!(!looks_like_source_file(r"D:\proj"));
+        assert!(!looks_like_source_file(r"D:\proj\build\classes\java\main"));
+        assert!(!looks_like_source_file("D:/proj/src"));
+        assert!(!looks_like_source_file(""));
+    }
+
+    #[test]
+    fn test_ensure_launch_cwd_fixes_source_file_cwd() {
+        // The exact failure from the field: the server returned the source
+        // file's own path as the working directory.
+        let mut config = serde_json::json!({
+            "request": "launch",
+            "mainClass": "org.example.MainKt",
+            "cwd": "D:/Projects/javaprojects/kkkkt/src/main/kotlin/Main.kt",
+        });
+        ensure_launch_cwd(&mut config, "D:/Projects/javaprojects/kkkkt");
+        assert_eq!(
+            config.get("cwd").and_then(serde_json::Value::as_str),
+            Some("D:/Projects/javaprojects/kkkkt")
+        );
+    }
+
+    #[test]
+    fn test_ensure_launch_cwd_fixes_empty_or_missing() {
+        // Empty cwd → workspace root.
+        let mut config = serde_json::json!({
+            "request": "launch",
+            "cwd": "",
+        });
+        ensure_launch_cwd(&mut config, "/proj");
+        assert_eq!(
+            config.get("cwd").and_then(serde_json::Value::as_str),
+            Some("/proj")
+        );
+        // Missing cwd → workspace root.
+        let mut config = serde_json::json!({
+            "request": "launch",
+        });
+        ensure_launch_cwd(&mut config, "/proj");
+        assert_eq!(
+            config.get("cwd").and_then(serde_json::Value::as_str),
+            Some("/proj")
+        );
+    }
+
+    #[test]
+    fn test_ensure_launch_cwd_preserves_valid() {
+        // A real directory cwd is kept.
+        let mut config = serde_json::json!({
+            "request": "launch",
+            "cwd": "D:/Projects/javaprojects/kkkkt",
+        });
+        ensure_launch_cwd(&mut config, "/fallback");
+        assert_eq!(
+            config.get("cwd").and_then(serde_json::Value::as_str),
+            Some("D:/Projects/javaprojects/kkkkt")
+        );
+        // Attach configs are never touched.
+        let mut config = serde_json::json!({
+            "request": "attach",
+            "port": 5005,
+        });
+        ensure_launch_cwd(&mut config, "/fallback");
+        assert!(config.get("cwd").is_none());
     }
 
     #[test]
