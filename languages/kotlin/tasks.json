@@ -4,26 +4,30 @@
     "command": "./gradlew test --tests \"$ZED_CUSTOM_kotlin_package_name.$ZED_CUSTOM_kotlin_class_name.$ZED_CUSTOM_kotlin_method_name\"",
     "tags": ["kotlin-test", "kotlin-test-nested"],
     "use_new_terminal": false,
-    "reveal": "always"
+    "reveal": "always",
+    "shell": { "program": "bash" }
   },
   {
     "label": "test $ZED_CUSTOM_kotlin_class_name",
     "command": "./gradlew test --tests \"$ZED_CUSTOM_kotlin_package_name.$ZED_CUSTOM_kotlin_class_name\"",
     "tags": ["kotlin-test-class", "kotlin-test-class-nested"],
     "use_new_terminal": false,
-    "reveal": "always"
+    "reveal": "always",
+    "shell": { "program": "bash" }
   },
   {
     "label": "run main",
     "command": "./gradlew run --console=plain",
     "tags": ["kotlin-main"],
     "use_new_terminal": false,
-    "reveal": "always"
+    "reveal": "always",
+    "shell": { "program": "bash" }
   },
   {
     "label": "run all tests",
     "command": "./gradlew test",
     "use_new_terminal": false,
-    "reveal": "always"
+    "reveal": "always",
+    "shell": { "program": "bash" }
   }
 ]
