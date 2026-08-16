@@ -885,30 +885,43 @@ impl IntelliJLspExtension {
         Some(sha256_prefix_16(&data))
     }
 
-    /// Mirrors the official VS Code extension's `resolveLaunchConfig`: asks
-    /// the IntelliJ server to resolve the main class's source document, then
-    /// its classpath, javaExec and working directory — so the user never has
-    /// to configure them. Everything is done through the bridge's HTTP endpoint
-    /// (LSP `workspace/executeCommand`).
+    /// Best-effort mirror of the official VS Code extension's
+    /// `resolveLaunchConfig`: asks the IntelliJ server to resolve the main
+    /// class's source document, then its classpath, javaExec and working
+    /// directory — so the user never has to configure them.
+    ///
+    /// Every step is independent and failures are silently skipped: the
+    /// IntelliJ debug server resolves the main class and classpath itself at
+    /// launch time from the project model, so a failed pre-resolution (e.g.
+    /// "No file found for class" while the import is still running) must not
+    /// abort the whole debug session. The launch then proceeds with the
+    /// local fallbacks (`inject_java_exec`, `ensure_launch_cwd`) and surfaces
+    /// the server's own error if the class genuinely cannot be found.
     fn resolve_launch_config(
         &mut self,
         config: &mut serde_json::Value,
         ws_uri: &str,
         main_class: &str,
-    ) -> Result<(), String> {
-        // 1. Locate the source file declaring the main class.
-        let doc: serde_json::Value = lsp_request_via_proxy(
+    ) {
+        // 1. Locate the source file declaring the main class. Without it the
+        //    other three commands have no `uri` to work on — give up quietly.
+        let Ok(doc) = lsp_request_via_proxy(
             ws_uri,
             "workspace/executeCommand",
             serde_json::json!({
                 "command": "intellij.java.resolveClassDocument",
                 "arguments": [{ "fqn": main_class }]
             }),
-        )?;
-        let file_uri = doc
+        ) else {
+            return;
+        };
+        let Some(file_uri) = doc
             .get("uri")
             .and_then(serde_json::Value::as_str)
-            .ok_or("resolveClassDocument returned no uri")?;
+            .map(str::to_string)
+        else {
+            return;
+        };
 
         // 2. Resolve the runtime classpath.
         if config.get("classPaths").is_none()
@@ -917,60 +930,60 @@ impl IntelliJLspExtension {
                 .and_then(serde_json::Value::as_array)
                 .is_some_and(|a| a.is_empty())
         {
-            let cp: serde_json::Value = lsp_request_via_proxy(
+            if let Ok(cp) = lsp_request_via_proxy(
                 ws_uri,
                 "workspace/executeCommand",
                 serde_json::json!({
                     "command": "intellij.java.resolveClasspath",
                     "arguments": [{ "uri": file_uri }]
                 }),
-            )?;
-            if let Some(classpath) = cp.get("classpath").and_then(serde_json::Value::as_array) {
-                config["classPaths"] = serde_json::Value::Array(classpath.clone());
+            ) {
+                if let Some(classpath) = cp.get("classpath").and_then(serde_json::Value::as_array) {
+                    config["classPaths"] = serde_json::Value::Array(classpath.clone());
+                }
             }
         }
 
         // 3. Resolve javaExec (JDK) — only if the user hasn't set one.
         if config.get("javaExec").is_none() {
-            let je: serde_json::Value = lsp_request_via_proxy(
+            if let Ok(je) = lsp_request_via_proxy(
                 ws_uri,
                 "workspace/executeCommand",
                 serde_json::json!({
                     "command": "intellij.java.resolveJavaExecutable",
                     "arguments": [{ "uri": file_uri }]
                 }),
-            )?;
-            if let Some(java_exec) = je.get("javaExec").and_then(serde_json::Value::as_str) {
-                config["javaExec"] = serde_json::Value::String(java_exec.to_string());
+            ) {
+                if let Some(java_exec) = je.get("javaExec").and_then(serde_json::Value::as_str) {
+                    config["javaExec"] = serde_json::Value::String(java_exec.to_string());
+                }
             }
         }
 
         // 4. Resolve the working directory if not set.
         if config.get("cwd").is_none() {
-            let wd: serde_json::Value = lsp_request_via_proxy(
+            if let Ok(wd) = lsp_request_via_proxy(
                 ws_uri,
                 "workspace/executeCommand",
                 serde_json::json!({
                     "command": "intellij.java.resolveWorkingDirectory",
                     "arguments": [{ "uri": file_uri }]
                 }),
-            )?;
-            if let Some(working_directory) = wd
-                .get("workingDirectory")
-                .and_then(serde_json::Value::as_str)
-            {
-                // The server can fall back to the source file's own path when
-                // the project model isn't ready (e.g. right after a debug
-                // session ended). A working directory must be a directory —
-                // skip file-shaped paths and let the caller fall back to the
-                // workspace root.
-                if !looks_like_source_file(working_directory) {
-                    config["cwd"] = serde_json::Value::String(working_directory.to_string());
+            ) {
+                if let Some(working_directory) = wd
+                    .get("workingDirectory")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    // The server can fall back to the source file's own path
+                    // when the project model isn't ready. A working directory
+                    // must be a directory — skip file-shaped paths and let
+                    // `ensure_launch_cwd` fall back to the workspace root.
+                    if !looks_like_source_file(working_directory) {
+                        config["cwd"] = serde_json::Value::String(working_directory.to_string());
+                    }
                 }
             }
         }
-
-        Ok(())
     }
 }
 
@@ -1113,29 +1126,28 @@ impl Extension for IntelliJLspExtension {
         let mut config_json: serde_json::Value = serde_json::from_str(&config.config)
             .map_err(|e| format!("Invalid JSON configuration: {e}"))?;
 
-        // Mirror the official VS Code extension's `resolveLaunchConfig` flow:
-        // ask the server to resolve the classpath, javaExec and working dir
-        // from the project model, so the user doesn't have to configure them.
+        // Best-effort mirror of the official VS Code extension's
+        // `resolveLaunchConfig` flow: ask the server to resolve the
+        // classpath, javaExec and working dir from the project model, so the
+        // user doesn't have to configure them.
         //
         // This must run BEFORE any local javaExec injection: the server
         // resolves the project SDK's real `<home>/bin/java` path, while a
         // locally-injected guess (e.g. the bare name "java" when Zed's process
         // can't see `$PATH`/`$JAVA_HOME`) would shadow it and make the server
         // fail with "Cannot derive JDK home from javaExec".
-        let main_class = config_json
+        //
+        // Resolution is best-effort: if the project model can't answer yet
+        // (e.g. "No file found for class" while the import is still running),
+        // the launch still proceeds — the server resolves the main class and
+        // classpath itself at launch time, and the local fallbacks below
+        // cover javaExec and cwd.
+        if let Some(main_class) = config_json
             .get("mainClass")
             .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
-        if let Some(main_class) = main_class {
-            if let Err(e) = self.resolve_launch_config(&mut config_json, &ws_uri, &main_class) {
-                // Resolution may fail if the project import is still in
-                // progress. Surface a clear error rather than silently
-                // launching with an empty classpath.
-                return Err(format!(
-                    "failed to resolve IntelliJ debug configuration (is the \
-                     project imported yet?): {e}"
-                ));
-            }
+            .map(str::to_string)
+        {
+            self.resolve_launch_config(&mut config_json, &ws_uri, &main_class);
         }
 
         // Fallback: if the server didn't provide a javaExec, inject one from
