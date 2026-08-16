@@ -167,13 +167,28 @@ DAP TCP port Zed connects to, and proxies the DAP channel (rewriting IntelliJ's
 Variables pane). The bridge is a native binary downloaded on first launch from
 this extension's GitHub Release — no Node.js involved.
 
-> **Kotlin run/test tasks**: the gutter run/test buttons (`languages/kotlin/
-> tasks.json`) run through the system's default shell. The commands are plain
-> `./gradlew ...` invocations (Zed resolves the `$ZED_CUSTOM_*` variables
-> itself), so they work under any shell. On Unix-like systems, Git Bash or the
-> system shell finds `./gradlew` directly; on Windows, add Git Bash's `bin`
-> directory to `PATH` (or point Zed's `terminal.shell` at it) so `./gradlew`
-> resolves to the checked-in Gradle wrapper.
+> **Run/test tasks and Windows vs Linux/macOS** — the gutter run/test buttons
+> (`languages/kotlin/tasks.json`, `languages/java/tasks.json`) ship as plain
+> `./gradlew ...` commands using the system's default shell. That form is what
+> **Linux and macOS** use — they run the checked-in Gradle wrapper directly.
+>
+> **Windows differs**: the Gradle wrapper is `gradlew.bat`, not `./gradlew`,
+> and the default shell is PowerShell. If the tasks fail on Windows, edit the
+> `command` fields in those two `tasks.json` files to PowerShell form. Two
+> things change per command:
+>
+> 1. `./gradlew` → `gradlew.bat` (no `./` prefix — PowerShell resolves
+>    `gradlew.bat` from the project directory, but not `./gradlew`);
+> 2. Zed's `$ZED_CUSTOM_*` variables inside the `--tests` argument must be
+>    wrapped in double quotes exactly like `"$ZED_CUSTOM_kotlin_package_name.
+$ZED_CUSTOM_kotlin_class_name"` — PowerShell expands them inside the
+>    quotes, and the quotes keep Gradle's `--tests` pattern intact.
+>
+> Example, Kotlin `test` task on Windows:
+>
+> ```json
+> "command": "gradlew.bat test --tests \"$ZED_CUSTOM_kotlin_package_name.$ZED_CUSTOM_kotlin_class_name\""
+> ```
 
 ## Settings
 
@@ -466,7 +481,7 @@ cargo fmt -- --check
 | Path                                | Purpose                                                                                                    |
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `src/lib.rs`                        | Extension entry point — EULA gate, binary resolution, download/launch, init options, debug adapter         |
-| `bridge/`                           | Rust bridge — LSP stdio forwarding + `start_debug_server` + DAP port proxy and `file://` → path rewriting |
+| `bridge/`                           | Rust bridge — LSP stdio forwarding + `start_debug_server` + DAP port proxy and `file://` → path rewriting  |
 | `server-artifacts.json`             | Pinned server version + per-platform download URLs (source of truth, updated by CI)                        |
 | `languages/`                        | Java/Kotlin/Gradle/Gradle-KTS/Properties language definitions (grammar, highlighting, runnables, tasks)    |
 | `extension.toml`                    | Zed extension manifest                                                                                     |
