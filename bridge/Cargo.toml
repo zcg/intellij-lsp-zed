@@ -1,0 +1,18 @@
+[package]
+name = "intellij-lsp-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Rust bridge for the IntelliJ LSP Zed extension — LSP stdio forwarding, HTTP control endpoint, DAP TCP proxy"
+license = "MIT"
+
+[[bin]]
+name = "intellij-lsp-bridge"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

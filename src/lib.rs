@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::{cmp::Ordering, fs};
 use zed_extension_api::{
-    self as zed, download_file, make_file_executable, node_binary_path, resolve_tcp_template,
+    self as zed, download_file, make_file_executable, resolve_tcp_template,
     set_language_server_installation_status, Command, DebugAdapterBinary, DebugConfig,
     DebugRequest, DebugScenario, DebugTaskDefinition, DownloadedFileType, Extension,
     LanguageServerId, LanguageServerInstallationStatus, Result, StartDebuggingRequestArguments,
@@ -249,13 +249,16 @@ fn server_launch_env(settings: &IntellijServerSettings) -> Vec<(String, String)>
 /// `adapterID`, so it has to match what the server expects.
 const DEBUG_ADAPTER_NAME: &str = "intellij_debugger";
 
-/// Node proxy script that wraps `intellij-server` so the extension can issue
-/// LSP requests (e.g. `start_debug_server`) through a local HTTP endpoint.
-const PROXY_SCRIPT: &str = include_str!("proxy.cjs");
-const PROXY_FILE: &str = "intellij-lsp-proxy.cjs";
+/// Rust bridge binary that wraps `intellij-server` so the extension can issue
+/// LSP requests (e.g. `start_debug_server`) through a local HTTP endpoint, and
+/// proxies the DAP TCP channel (rewriting IntelliJ's `file://` source URIs
+/// into the absolute paths Zed needs for the Variables pane). Downloaded on
+/// first launch from this extension's GitHub Release, exactly like the server.
+const BRIDGE_NAME: &str = "intellij-lsp-bridge";
 
 struct IntelliJLspExtension {
     cached_binary_path: Option<String>,
+    cached_bridge_path: Option<String>,
     cached_workspace: Option<String>,
 }
 
@@ -320,6 +323,19 @@ fn find_installed_server() -> Option<(String, String)> {
         }
     }
     latest
+}
+
+/// Returns the path of a previously downloaded Rust bridge binary in the
+/// extension sandbox, if one exists (name: `intellij-lsp-bridge-<...>.exe`).
+fn find_bridge_installed() -> Option<String> {
+    let entries = fs::read_dir(".").ok()?;
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("intellij-lsp-bridge-") {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// Numeric dot-segment comparison, so `263.2689.10` sorts after `263.2689.9`.
@@ -729,6 +745,50 @@ impl IntelliJLspExtension {
         Ok(binary)
     }
 
+    /// Resolves (downloading on first use) the Rust bridge binary that wraps
+    /// the language server. The bridge is published as a release asset of this
+    /// extension's repository, named `intellij-lsp-bridge-<platform>-<version>`.
+    fn bridge_binary_path(&mut self) -> Result<String> {
+        if let Some(path) = &self.cached_bridge_path {
+            if fs::metadata(path).is_ok_and(|stat| stat.is_file()) {
+                return Ok(path.clone());
+            }
+        }
+        // Reuse a previously downloaded bridge in the sandbox.
+        if let Some(path) = find_bridge_installed() {
+            self.cached_bridge_path = Some(path.clone());
+            return Ok(path);
+        }
+
+        let (os, arch) = zed::current_platform();
+        let platform_tag = match (os, arch) {
+            (zed::Os::Mac, zed::Architecture::Aarch64) => "macos-aarch64",
+            (zed::Os::Mac, _) => "macos-x86_64",
+            (zed::Os::Linux, zed::Architecture::Aarch64) => "linux-aarch64",
+            (zed::Os::Linux, _) => "linux-x86_64",
+            (zed::Os::Windows, zed::Architecture::Aarch64) => "windows-aarch64",
+            (zed::Os::Windows, _) => "windows-x86_64",
+        };
+        let exe = if cfg!(windows) { ".exe" } else { "" };
+        let file_name = format!(
+            "{BRIDGE_NAME}-{platform_tag}-{}{exe}",
+            env!("CARGO_PKG_VERSION")
+        );
+        let url = format!(
+            "https://github.com/zcg/intellij-lsp-zed/releases/download/v{}/{}",
+            env!("CARGO_PKG_VERSION"),
+            file_name
+        );
+
+        download_file(&url, &file_name, DownloadedFileType::Uncompressed).map_err(|e| {
+            format!("failed to download the IntelliJ LSP bridge ({file_name}): {e}")
+        })?;
+        make_file_executable(&file_name)
+            .map_err(|e| format!("failed to make the bridge executable: {e}"))?;
+        self.cached_bridge_path = Some(file_name.clone());
+        Ok(file_name)
+    }
+
     /// Resolves the EULA acceptance hash to send to the server: an explicit
     /// user override, or the hash computed from the EULA.txt bundled with the
     /// installed server.
@@ -843,6 +903,7 @@ impl Extension for IntelliJLspExtension {
     fn new() -> Self {
         Self {
             cached_binary_path: None,
+            cached_bridge_path: None,
             cached_workspace: None,
         }
     }
@@ -864,28 +925,26 @@ impl Extension for IntelliJLspExtension {
         }
 
         let binary_path = self.language_server_binary_path(language_server_id, &settings)?;
+        let bridge_path = self.bridge_binary_path()?;
         let root = worktree.root_path();
         let ws_uri = workspace_uri(&root);
         self.cached_workspace = Some(root.clone());
 
-        // Materialize the proxy script into the extension's working directory
-        // so the language server is spawned through it. The proxy forwards LSP
-        // stdio transparently and exposes an HTTP endpoint we use for debug.
-        //
         // The extension's wasm runs with its working directory set to the
         // extension workdir (e.g. .../extensions/work/intellij-lsp), whereas
-        // the spawned Node process runs with the *project* directory as cwd.
-        // Resolve absolute paths for both the proxy script and the server
-        // binary so Node can find them regardless of its working directory.
+        // the spawned bridge process runs with the *project* directory as cwd.
+        // Resolve absolute paths for the bridge and the server binary so they
+        // can be found regardless of the bridge's working directory.
         let workdir =
             std::env::current_dir().map_err(|e| format!("failed to get extension workdir: {e}"))?;
-        let proxy_path = workdir.join(PROXY_FILE);
-        // Always (over)write the proxy script so the version baked into the
-        // wasm stays in sync with disk — an outdated proxy on disk (e.g. from
-        // an earlier extension version) would misplace its port file.
-        fs::write(&proxy_path, PROXY_SCRIPT)
-            .map_err(|e| format!("failed to write proxy script {}: {e}", proxy_path.display()))?;
-
+        let bridge_path = {
+            let p = std::path::Path::new(&bridge_path);
+            if p.is_absolute() {
+                bridge_path
+            } else {
+                workdir.join(p).to_string_lossy().to_string()
+            }
+        };
         // `binary_path` is relative to the extension workdir; make it absolute.
         let binary_path = {
             let p = std::path::Path::new(&binary_path);
@@ -896,17 +955,16 @@ impl Extension for IntelliJLspExtension {
             }
         };
 
-        // The proxy (Node) inherits these and forwards them to the server
-        // process it spawns (`IJ_JAVA_OPTIONS`, `INTELLIJ_REGION`, ...).
+        // The bridge inherits these and forwards them to the server process it
+        // spawns (`IJ_JAVA_OPTIONS`, `INTELLIJ_REGION`, ...).
         let env = server_launch_env(&settings);
 
         Ok(Command {
-            command: node_binary_path()?,
+            command: bridge_path,
             args: vec![
-                proxy_path.to_string_lossy().to_string(),
                 binary_path,
                 ws_uri,
-                workdir.to_string_lossy().to_string(), // proxy writes its port file here
+                workdir.to_string_lossy().to_string(), // bridge writes its port file here
             ],
             env,
         })

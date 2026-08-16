@@ -160,10 +160,12 @@ Or launch the app, then F5 → **IntelliJ LSP** → **Attach**.
 
 ### How the debugger works
 
-Under the hood the extension spawns the language server through a small Node
-proxy that answers `start_debug_server` LSP requests, returns the DAP TCP port
-Zed connects to, and proxies the DAP channel (rewriting IntelliJ's `file://`
-source URIs into the absolute paths Zed needs to populate the Variables pane).
+Under the hood the extension spawns the language server through a small Rust
+bridge (`bridge/`) that answers `start_debug_server` LSP requests, returns the
+DAP TCP port Zed connects to, and proxies the DAP channel (rewriting IntelliJ's
+`file://` source URIs into the absolute paths Zed needs to populate the
+Variables pane). The bridge is a native binary downloaded on first launch from
+this extension's GitHub Release — no Node.js involved.
 
 > **Kotlin run/test tasks**: the gutter run/test buttons (`languages/kotlin/
 tasks.json`) run through **PowerShell 7 (`pwsh`)** on every platform. On
@@ -335,12 +337,11 @@ The `!` prefix disables the built-in server for that language.
    (`intellij.projects`, `intellij.buildTool`, ...) are also forwarded to the
    server at startup — matching the real VS Code extension's behaviour.
 
-6. The language server is spawned through a bundled Node proxy
-   (`src/proxy.cjs`) that transparently forwards LSP stdio between Zed and the
-   server. When you start a debug session, the proxy forwards the
-   `start_debug_server` request to the server and returns the DAP TCP port
-   that Zed connects to. Zed ships a Node runtime, so no separate download is
-   needed.
+6. The language server is spawned through the Rust bridge (`bridge/`) that
+   transparently forwards LSP stdio between Zed and the server. When you start
+   a debug session, the bridge forwards the `start_debug_server` request to
+   the server and returns the DAP TCP port that Zed connects to. The bridge is
+   downloaded once from this extension's GitHub Release.
 
 7. Your project imports (Maven/Gradle/Bazel) and language features activate.
 
@@ -464,7 +465,7 @@ cargo fmt -- --check
 | Path                                | Purpose                                                                                                    |
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `src/lib.rs`                        | Extension entry point — EULA gate, binary resolution, download/launch, init options, debug adapter         |
-| `src/proxy.cjs`                     | Node proxy — LSP stdio forwarding + `start_debug_server` + DAP port proxy and `file://` → path rewriting   |
+| `bridge/`                           | Rust bridge — LSP stdio forwarding + `start_debug_server` + DAP port proxy and `file://` → path rewriting |
 | `server-artifacts.json`             | Pinned server version + per-platform download URLs (source of truth, updated by CI)                        |
 | `languages/`                        | Java/Kotlin/Gradle/Gradle-KTS/Properties language definitions (grammar, highlighting, runnables, tasks)    |
 | `extension.toml`                    | Zed extension manifest                                                                                     |
