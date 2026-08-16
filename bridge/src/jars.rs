@@ -1,49 +1,34 @@
-//! jar:// → 本地源码文件
+//! 虚拟源 URI(`jar://` / `jrt://` / `file://...zip!/...`)→ 本地文件
 //!
-//! IntelliJ 服务器对 JDK 与第三方库的源码引用返回 `jar://` URI,例如
-//! `jar:///D:/path/to/guava-33.0.0-jre.jar!/com/google/common/collect/Lists.java`
-//! 或 JDK 的 `jar:///.../src.zip!/java/lang/String.java`。Zed 不识别
-//! `jar://` scheme,定义跳转会直接失败。
+//! IntelliJ 服务器对 JDK 与第三方库的源码引用返回虚拟 URI,例如
+//! `jar:///D:/libs/guava-33.0.0-jre.jar!/com/google/common/collect/Lists.java`、
+//! `jrt:/java.base/java/lang/String.java`,或(实测到的形式)
+//! `file:///d:/jdk/lib/src.zip!/java.base/java/lang/RuntimeException.java`、
+//! `file:///d:/mavenrepo/io/agentscope/...-sources.jar!/io/.../HarnessAgent.java`。
+//! Zed 打不开这些虚拟路径,定义跳转会直接失败。
 //!
-//! 这里的做法是:把 jar/zip 内的源码条目提取到
-//! `<workdir>/sources/<hex(jar-path)>/<entry>` 缓存文件,然后把 URI 改写成
-//! Zed 能打开的 `file://` 路径。提取结果按 (jar, entry) 记忆,后续跳转直接
-//! 命中缓存,不再打开压缩包。
+//! 方案(与官方 VS Code 插件一致):向 IntelliJ 服务器发
+//! `workspace/textDocumentContent` 请求拿源码文本,写入
+//! `<workdir>/sources/<hex(uri)>/<basename>` 缓存文件,再把消息里的 URI 改写
+//! 成 Zed 能打开的 `file://` 路径。提取结果按 uri 记忆,后续跳转直接命中。
 
 use std::collections::HashMap;
-use std::fs;
-use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// 解析 `jar:///...jar!/entry` → (jar 路径, zip 内条目路径)。
-///
-/// 返回的 entry 已去掉前导 `/`(IntelliJ 有时写成 `!/java/lang/String.java`)。
-pub fn parse_jar_uri(uri: &str) -> Option<(String, String)> {
-    let rest = uri.strip_prefix("jar:///")?;
-    let (jar, entry) = rest.split_once("!/")?;
-    let entry = entry.trim_start_matches('/');
-    if jar.is_empty() || entry.is_empty() {
-        return None;
-    }
-    Some((jar.to_string(), entry.to_string()))
-}
-
-/// 缓存的源码提取器。线程安全:多线程跳转互不干扰。
+/// 缓存的"虚拟 URI → 本地文件"映射。线程安全:多线程跳转互不干扰。
 pub struct Cache {
-    sources_dir: PathBuf,
     mem: Mutex<HashMap<String, String>>,
 }
 
 impl Cache {
-    pub fn new(workdir: &str) -> Self {
+    pub fn new(_workdir: &str) -> Self {
         Self {
-            sources_dir: Path::new(workdir).join("sources"),
             mem: Mutex::new(HashMap::new()),
         }
     }
 
-    /// 是否命中内存缓存。
+    /// 是否已缓存过该虚拟 URI(返回本地 file:// 路径)。
     pub fn cached(&self, uri: &str) -> Option<String> {
         self.mem.lock().ok()?.get(uri).cloned()
     }
@@ -54,122 +39,30 @@ impl Cache {
             mem.insert(uri.to_string(), file_uri);
         }
     }
-
-    /// 尝试把 `jar://` URI 改写成本地 `file://` 路径(仅本地可提取的情况;
-    /// `jrt://` 与提取失败返回 `None`,由调用方走"问服务器要文本")。
-    pub fn rewrite(&self, uri: &str) -> Option<String> {
-        if let Some(cached) = self.cached(uri) {
-            return Some(cached);
-        }
-        let (jar, entry) = parse_jar_uri(uri)?;
-        let target = self.extract(&jar, &entry)?;
-        let file_uri = path_to_file_uri(&target);
-        self.remember(uri, file_uri.clone());
-        Some(file_uri)
-    }
-
-    fn extract(&self, jar: &str, entry: &str) -> Option<PathBuf> {
-        // 防路径穿越:entry 只允许普通路径段,拒绝 `..`、根路径等。
-        let mut target = self.sources_dir.join(hex_string(jar));
-        for part in Path::new(entry).components() {
-            match part {
-                Component::Normal(seg) => target.push(seg),
-                _ => return None,
-            }
-        }
-        if target.is_file() {
-            return Some(target);
-        }
-
-        // 1. 从 jar 本身读源码(库 jar 可能打包了 .java;JDK 的 `src.zip`
-        //    本身就是 zip,同样适用)。
-        if let Some(content) = read_from_zip(jar, entry) {
-            write_cache(&target, content)?;
-            return Some(target);
-        }
-
-        // 2. jar 内没有源码 → 尝试同目录的 `<artifact>-<version>-sources.jar`
-        //    (Maven `~/.m2/repository` 与 Gradle 缓存都把 sources jar 和
-        //    jar 放在同一目录;JDK 的 `src.zip` 在第一步已命中)。
-        if let Some(sources) = sibling_sources_jar(jar) {
-            if let Some(content) = read_from_zip(&sources, entry) {
-                write_cache(&target, content)?;
-                return Some(target);
-            }
-        }
-
-        None
-    }
 }
 
-/// 读取 zip/jar 内某个条目;精确匹配优先,大小写不敏感与尾段匹配兜底。
-fn read_from_zip(zip_path: &str, entry: &str) -> Option<Vec<u8>> {
-    let file = fs::File::open(zip_path).ok()?;
-    let mut archive = zip::ZipArchive::new(file).ok()?;
-    if let Ok(mut f) = archive.by_name(entry) {
-        let mut buf = Vec::new();
-        f.read_to_end(&mut buf).ok()?;
-        return Some(buf);
-    }
-    for i in 0..archive.len() {
-        let mut f = archive.by_index(i).ok()?;
-        let name = f.name().to_string();
-        if name.eq_ignore_ascii_case(entry) || name.ends_with(entry) {
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf).ok()?;
-            return Some(buf);
-        }
-    }
-    None
-}
-
-/// 由 jar 路径推导同目录的 sources jar:`<artifact>-<version>.jar` →
-/// `<artifact>-<version>-sources.jar`。已是 sources jar 时返回 None。
-fn sibling_sources_jar(jar: &str) -> Option<String> {
-    let p = Path::new(jar);
-    let file_name = p.file_name()?.to_str()?;
-    if file_name.ends_with("-sources.jar") || file_name.ends_with("-src.jar") {
-        return None;
-    }
-    let stem = file_name.strip_suffix(".jar")?;
-    let candidate = p.with_file_name(format!("{stem}-sources.jar"));
-    if candidate.is_file() {
-        Some(candidate.to_string_lossy().into_owned())
-    } else {
-        None
-    }
-}
-
-fn write_cache(target: &Path, content: Vec<u8>) -> Option<()> {
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).ok()?;
-    }
-    fs::write(target, content).ok()?;
-    Some(())
-}
-
-fn hex_string(s: &str) -> String {
-    s.as_bytes().iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-pub fn path_to_file_uri(p: &Path) -> String {
-    let s = p.to_string_lossy().replace('\\', "/");
-    if s.starts_with('/') {
-        format!("file://{s}")
-    } else {
-        format!("file:///{s}")
-    }
-}
-
-/// 是否是需要在 Zed 侧展开的虚拟源 URI(`jar://` 或 JDK 9+ 的 `jrt://`)。
+/// 是否是需要在 Zed 侧展开的虚拟源 URI:
+/// - `jar://` / `jrt://`(IntelliJ 经典库 URI);
+/// - `file://` 且路径中含 `!`(实测:JDK `src.zip!` 与 Maven `-sources.jar!`)。
 pub fn is_virtual_uri(uri: &str) -> bool {
-    uri.starts_with("jar://") || uri.starts_with("jrt://")
+    uri.starts_with("jar://")
+        || uri.starts_with("jrt:")
+        || (uri.starts_with("file://") && uri.contains('!'))
 }
 
 /// 按原始 URI 计算落盘缓存路径:`sources/<hex(uri)>/<basename>`。
 /// 服务器取文本成功后写入,之后直接打开本地文件。
 pub fn cache_target_for(uri: &str, workdir: &str) -> Option<PathBuf> {
-    let base = uri.rsplit('/').next().filter(|s| !s.is_empty())?;
+    let base = uri
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())?
+        .split('!')
+        .next()
+        .unwrap_or_default();
+    if base.is_empty() {
+        return None;
+    }
     Some(
         Path::new(workdir)
             .join("sources")
@@ -178,7 +71,7 @@ pub fn cache_target_for(uri: &str, workdir: &str) -> Option<PathBuf> {
     )
 }
 
-/// 递归收集消息中所有 jar:// / jrt:// 字符串(去重)。
+/// 递归收集消息中所有虚拟源 URI(去重)。
 pub fn collect_virtual_uris(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
         serde_json::Value::String(s) => {
@@ -222,112 +115,81 @@ pub fn replace_uri(value: &mut serde_json::Value, from: &str, to: &str) {
     }
 }
 
+pub fn path_to_file_uri(p: &Path) -> String {
+    let s = p.to_string_lossy().replace('\\', "/");
+    if s.starts_with('/') {
+        format!("file://{s}")
+    } else {
+        format!("file:///{s}")
+    }
+}
+
+fn hex_string(s: &str) -> String {
+    s.as_bytes().iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
-    fn make_jar(path: &Path) {
-        let file = fs::File::create(path).unwrap();
-        let mut writer = zip::ZipWriter::new(file);
-        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        writer.start_file("com/example/Lists.java", opts).unwrap();
-        writer.write_all(b"package com.example; class Lists {}").unwrap();
-        writer.finish().unwrap();
+    #[test]
+    fn recognizes_jar_uri() {
+        assert!(is_virtual_uri("jar:///D:/libs/guava.jar!/com/x/Lists.java"));
+        assert!(is_virtual_uri("jrt:/java.base/java/lang/String.java"));
+        assert!(is_virtual_uri(
+            "file:///d:/jdk/lib/src.zip!/java.base/java/lang/RuntimeException.java"
+        ));
+        assert!(is_virtual_uri(
+            "file:///d:/mavenrepo/io/x/lib-1.0-sources.jar!/io/x/Agent.java"
+        ));
     }
 
     #[test]
-    fn parses_windows_jar_uri() {
-        let (jar, entry) = parse_jar_uri(
-            "jar:///D:/libs/guava-33.0.0-jre.jar!/com/google/common/collect/Lists.java",
+    fn real_files_not_virtual() {
+        assert!(!is_virtual_uri("file:///D:/Projects/app/src/Main.java"));
+        assert!(!is_virtual_uri("file:///D:/Projects/app"));
+        assert!(!is_virtual_uri("untitled:Untitled-1"));
+        assert!(!is_virtual_uri(""));
+    }
+
+    #[test]
+    fn cache_target_uses_uri_hash_and_basename() {
+        let target = cache_target_for(
+            "file:///d:/jdk/lib/src.zip!/java.base/java/lang/String.java",
+            r"C:\workdir",
         )
         .unwrap();
-        assert_eq!(jar, "D:/libs/guava-33.0.0-jre.jar");
-        assert_eq!(entry, "com/google/common/collect/Lists.java");
+        let s = target.to_string_lossy();
+        assert!(s.starts_with(r"C:\workdir\sources\"));
+        assert!(s.ends_with("String.java"));
     }
 
     #[test]
-    fn parses_leading_slash_entry() {
-        let (_, entry) = parse_jar_uri("jar:///x.jar!/java/lang/String.java").unwrap();
-        assert_eq!(entry, "java/lang/String.java");
+    fn collect_and_replace() {
+        let mut msg = serde_json::json!({
+            "result": [{
+                "uri": "jar:///D:/libs/guava.jar!/com/x/Lists.java",
+                "range": { "start": { "line": 0 } }
+            }]
+        });
+        let mut uris = Vec::new();
+        collect_virtual_uris(&msg, &mut uris);
+        assert_eq!(uris.len(), 1);
+        replace_uri(&mut msg, &uris[0], "file:///C:/cache/Lists.java");
+        assert_eq!(
+            msg["result"][0]["uri"],
+            "file:///C:/cache/Lists.java"
+        );
     }
 
     #[test]
-    fn rejects_malformed() {
-        assert!(parse_jar_uri("not-a-jar-uri").is_none());
-        assert!(parse_jar_uri("jar:///only-jar.jar").is_none());
-        assert!(parse_jar_uri("jar:///a.jar!/").is_none());
-    }
-
-    #[test]
-    fn extracts_to_cache_and_rewrites() {
-        let dir = std::env::temp_dir().join("intellij-lsp-test-jars");
-        let _ = fs::create_dir_all(&dir);
-        let jar_path = dir.join("demo.jar");
-        make_jar(&jar_path);
-
-        let cache = Cache::new(&dir.to_string_lossy());
-        let uri = format!("jar:///{}!/com/example/Lists.java", jar_path.to_string_lossy());
-        let file_uri = cache.rewrite(&uri).expect("rewrite");
-        assert!(file_uri.starts_with("file:///"));
-        let path = file_uri.strip_prefix("file:///").unwrap().replace('/', "\\");
-        let content = fs::read_to_string(std::path::PathBuf::from(&path)).unwrap();
-        assert!(content.contains("class Lists"));
-
-        // 二次命中内存缓存,返回同一路径。
-        assert_eq!(cache.rewrite(&uri), Some(file_uri));
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn path_traversal_blocked() {
-        let dir = std::env::temp_dir().join("intellij-lsp-test-traversal");
-        let _ = fs::create_dir_all(&dir);
-        let jar_path = dir.join("evil.jar");
-        make_jar(&jar_path);
-
-        let cache = Cache::new(&dir.to_string_lossy());
-        let uri = format!("jar:///{}/!../../outside.java", jar_path.to_string_lossy());
-        assert!(cache.rewrite(&uri).is_none());
-        assert!(!dir.parent().unwrap().join("outside.java").exists());
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn falls_back_to_sibling_sources_jar() {
-        let dir = std::env::temp_dir().join("intellij-lsp-test-sources");
-        let _ = fs::create_dir_all(&dir);
-
-        // 只有 .class、没有源码的 jar。
-        let class_jar = dir.join("demo-1.0.jar");
-        {
-            let file = fs::File::create(&class_jar).unwrap();
-            let mut w = zip::ZipWriter::new(file);
-            let opts = zip::write::SimpleFileOptions::default();
-            w.start_file("com/example/Lists.class", opts).unwrap();
-            w.write_all(b"class bytes").unwrap();
-            w.finish().unwrap();
-        }
-        // 同目录的 -sources.jar。
-        let sources_jar = dir.join("demo-1.0-sources.jar");
-        {
-            let file = fs::File::create(&sources_jar).unwrap();
-            let mut w = zip::ZipWriter::new(file);
-            let opts = zip::write::SimpleFileOptions::default();
-            w.start_file("com/example/Lists.java", opts).unwrap();
-            w.write_all(b"package com.example; class Lists {}").unwrap();
-            w.finish().unwrap();
-        }
-
-        let cache = Cache::new(&dir.to_string_lossy());
-        let uri = format!("jar:///{}!/com/example/Lists.java", class_jar.to_string_lossy());
-        let file_uri = cache.rewrite(&uri).expect("rewrite via sources jar");
-        let path = file_uri.strip_prefix("file:///").unwrap().replace('/', "\\");
-        let content = fs::read_to_string(std::path::PathBuf::from(&path)).unwrap();
-        assert!(content.contains("class Lists"));
-
-        let _ = fs::remove_dir_all(&dir);
+    fn cache_remember_and_hit() {
+        let cache = Cache::new(r"C:\workdir");
+        assert!(cache.cached("jar:///x.jar!/a.java").is_none());
+        cache.remember("jar:///x.jar!/a.java", "file:///C:/sources/a.java".into());
+        assert_eq!(
+            cache.cached("jar:///x.jar!/a.java").as_deref(),
+            Some("file:///C:/sources/a.java")
+        );
     }
 }

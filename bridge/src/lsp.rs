@@ -115,9 +115,7 @@ fn forward_to_zed(shared: &Shared, msg: &serde_json::Value) {
     let mut out = msg.clone();
     let mut pending = Vec::new();
     for uri in &uris {
-        if let Some(file_uri) = shared.jars.rewrite(uri) {
-            jars::replace_uri(&mut out, uri, &file_uri);
-        } else if let Some(cached) = shared.jars.cached(uri) {
+        if let Some(cached) = shared.jars.cached(uri) {
             jars::replace_uri(&mut out, uri, &cached);
         } else {
             pending.push(uri.clone());
