@@ -1,41 +1,29 @@
 [
   {
     "label": "test $ZED_CUSTOM_kotlin_class_name.$ZED_CUSTOM_kotlin_method_name",
-    "command": "if (Test-Path .\\gradlew.bat) { .\\gradlew.bat test --tests \"$ZED_CUSTOM_kotlin_package_name.$ZED_CUSTOM_kotlin_class_name.$ZED_CUSTOM_kotlin_method_name\" } elseif (Test-Path ./gradlew) { ./gradlew test --tests \"$ZED_CUSTOM_kotlin_package_name.$ZED_CUSTOM_kotlin_class_name.$ZED_CUSTOM_kotlin_method_name\" } elseif (Test-Path pom.xml) { mvn test -Dtest=\"$ZED_CUSTOM_kotlin_class_name#$ZED_CUSTOM_kotlin_method_name\" } else { Write-Error 'No build system found' }",
+    "command": "./gradlew test --tests \"$ZED_CUSTOM_kotlin_package_name.$ZED_CUSTOM_kotlin_class_name.$ZED_CUSTOM_kotlin_method_name\"",
     "tags": ["kotlin-test", "kotlin-test-nested"],
     "use_new_terminal": false,
-    "reveal": "always",
-    "shell": {
-      "program": "pwsh"
-    }
+    "reveal": "always"
   },
   {
     "label": "test $ZED_CUSTOM_kotlin_class_name",
-    "command": "if (Test-Path .\\gradlew.bat) { .\\gradlew.bat test --tests \"$ZED_CUSTOM_kotlin_package_name.$ZED_CUSTOM_kotlin_class_name\" } elseif (Test-Path ./gradlew) { ./gradlew test --tests \"$ZED_CUSTOM_kotlin_package_name.$ZED_CUSTOM_kotlin_class_name\" } elseif (Test-Path pom.xml) { mvn test -Dtest=\"$ZED_CUSTOM_kotlin_class_name\" } else { Write-Error 'No build system found' }",
+    "command": "./gradlew test --tests \"$ZED_CUSTOM_kotlin_package_name.$ZED_CUSTOM_kotlin_class_name\"",
     "tags": ["kotlin-test-class", "kotlin-test-class-nested"],
     "use_new_terminal": false,
-    "reveal": "always",
-    "shell": {
-      "program": "pwsh"
-    }
+    "reveal": "always"
   },
   {
     "label": "run main",
-    "command": "if (Test-Path .\\gradlew.bat) { .\\gradlew.bat run --console=plain } elseif (Test-Path ./gradlew) { ./gradlew run --console=plain } elseif (Test-Path pom.xml) { mvn compile exec:java } elseif (Get-Command kotlin -ErrorAction SilentlyContinue) { & kotlin \"$ZED_FILE\" } else { Write-Error 'No Kotlin runtime found' }",
+    "command": "./gradlew run --console=plain",
     "tags": ["kotlin-main"],
     "use_new_terminal": false,
-    "reveal": "always",
-    "shell": {
-      "program": "pwsh"
-    }
+    "reveal": "always"
   },
   {
     "label": "run all tests",
-    "command": "if (Test-Path .\\gradlew.bat) { .\\gradlew.bat test } elseif (Test-Path ./gradlew) { ./gradlew test } elseif (Test-Path pom.xml) { mvn test } else { Write-Error 'No build system found' }",
+    "command": "./gradlew test",
     "use_new_terminal": false,
-    "reveal": "always",
-    "shell": {
-      "program": "pwsh"
-    }
+    "reveal": "always"
   }
 ]

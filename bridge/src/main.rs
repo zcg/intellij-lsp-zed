@@ -28,7 +28,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -44,6 +44,9 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// An LSP request issued by the bridge, waiting for its response.
 pub struct PendingRequest {
     pub method: String,
+    /// The `command` name for `workspace/executeCommand` requests (used to
+    /// detect `start_debug_server` responses), `None` otherwise.
+    pub command: Option<String>,
     pub tx: Sender<serde_json::Value>,
 }
 
@@ -52,6 +55,7 @@ pub struct Shared {
     pub next_id: AtomicU64,
     pub pending: Mutex<HashMap<u64, PendingRequest>>,
     pub server_stdin: Mutex<ChildStdin>,
+    pub child: Mutex<Child>,
     pub real_dap_port: Mutex<Option<u16>>,
     pub dap_proxy_port: u16,
     pub workspace_uri: String,
@@ -109,6 +113,7 @@ fn main() {
         next_id: AtomicU64::new(ID_BASE),
         pending: Mutex::new(HashMap::new()),
         server_stdin: Mutex::new(server_stdin),
+        child: Mutex::new(child),
         real_dap_port: Mutex::new(None),
         dap_proxy_port,
         workspace_uri: workspace_uri.clone(),
@@ -135,7 +140,10 @@ fn main() {
         });
     }
 
-    // Zed's LSP stdin → server (transparent forwarding).
+    // Zed's LSP stdin → server (transparent forwarding). When Zed closes the
+    // pipe (stopping/reloading the language server), EOF here is the signal to
+    // terminate the server child — otherwise the JVM leaks and keeps the
+    // workspace/port locked for the next session.
     {
         let shared = shared.clone();
         thread::spawn(move || {
@@ -143,7 +151,10 @@ fn main() {
             let mut buf = [0u8; 8192];
             loop {
                 match std::io::stdin().read(&mut buf) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => {
+                        let _ = shared.child.lock().unwrap().kill();
+                        break;
+                    }
                     Ok(n) => {
                         frame.push(&buf[..n]);
                         while let Some(body) = frame.next_frame() {
@@ -191,7 +202,7 @@ fn main() {
         "--- server stdout closed; bridge exiting ---"
     );
     cleanup_port_file(&workdir, &workspace_uri);
-    let _ = child.wait();
+    let _ = shared.child.lock().unwrap().wait();
     std::process::exit(0);
 }
 

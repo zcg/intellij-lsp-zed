@@ -16,14 +16,15 @@ pub fn send_lsp_request(
 ) -> serde_json::Value {
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = channel();
-    shared
-        .pending
-        .lock()
-        .unwrap()
-        .insert(id, PendingRequest {
+    let command = params.get("command").and_then(|c| c.as_str()).map(str::to_string);
+    shared.pending.lock().unwrap().insert(
+        id,
+        PendingRequest {
             method: method.to_string(),
+            command,
             tx,
-        });
+        },
+    );
     let msg = serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
     {
         let mut stdin = shared.server_stdin.lock().unwrap();
@@ -58,10 +59,12 @@ pub fn handle_server_message(shared: &Shared, body: &[u8]) {
         // Response to a request the bridge itself issued → resolve the HTTP caller.
         if let Some(pending) = shared.pending.lock().unwrap().remove(&id) {
             // `start_debug_server`: hand Zed *our* DAP proxy port and remember
-            // the server's real port to forward connections to.
-            if pending.method == "workspace/executeCommand"
-                && msg.get("result").and_then(|r| r.as_u64()).is_some()
-            {
+            // the server's real port to forward connections to. Only this
+            // specific command's numeric result is rewritten — any other
+            // `workspace/executeCommand` passes through untouched.
+            let is_start_debug_server = pending.method == "workspace/executeCommand"
+                && pending.command.as_deref() == Some("start_debug_server");
+            if is_start_debug_server && msg.get("result").and_then(|r| r.as_u64()).is_some() {
                 if let Some(real) = msg.get("result").and_then(|r| r.as_u64()) {
                     *shared.real_dap_port.lock().unwrap() = Some(real as u16);
                 }

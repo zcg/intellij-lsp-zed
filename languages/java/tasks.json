@@ -1,34 +1,30 @@
 [
   {
     "label": "Run $ZED_CUSTOM_java_class_name",
-    "command": "$cls = \"$ZED_CUSTOM_java_class_name\"; $pkg = \"$ZED_CUSTOM_java_package_name\"; if ($pkg) { $main = \"$pkg.$cls\" } else { $main = $cls }; if (Test-Path .\\gradlew.bat) { .\\gradlew.bat run --args=\"-PmainClass=$main\" } elseif (Test-Path ./gradlew) { ./gradlew run --args=\"-PmainClass=$main\" } elseif (Test-Path pom.xml) { mvn compile exec:java -Dexec.mainClass=\"$main\" } else { Write-Error 'No build system found' }",
+    "command": "./gradlew run",
     "use_new_terminal": false,
     "reveal": "always",
-    "tags": ["java-main"],
-    "shell": { "program": "pwsh" }
+    "tags": ["java-main"]
   },
   {
     "label": "Test $ZED_CUSTOM_java_class_name.$ZED_CUSTOM_java_method_name",
-    "command": "$cls = \"$ZED_CUSTOM_java_class_name\"; $pkg = \"$ZED_CUSTOM_java_package_name\"; $outer = \"$ZED_CUSTOM_java_outer_class_name\"; if ($outer) { $inner = \"$outer`$$cls\" } else { $inner = $cls }; if ($pkg) { $fq = \"$pkg.$inner\" } else { $fq = $inner }; if (Test-Path .\\gradlew.bat) { .\\gradlew.bat test --tests \"$fq\" } elseif (Test-Path ./gradlew) { ./gradlew test --tests \"$fq\" } elseif (Test-Path pom.xml) { mvn test -Dtest=\"$fq#$ZED_CUSTOM_java_method_name\" } else { Write-Error 'No build system found' }",
+    "command": "./gradlew test --tests \"$ZED_CUSTOM_java_package_name.$ZED_CUSTOM_java_class_name.$ZED_CUSTOM_java_method_name\"",
     "use_new_terminal": false,
     "reveal": "always",
-    "tags": ["java-test-method", "java-test-method-nested"],
-    "shell": { "program": "pwsh" }
+    "tags": ["java-test-method", "java-test-method-nested"]
   },
   {
     "label": "Test class $ZED_CUSTOM_java_class_name",
-    "command": "$cls = \"$ZED_CUSTOM_java_class_name\"; $pkg = \"$ZED_CUSTOM_java_package_name\"; $outer = \"$ZED_CUSTOM_java_outer_class_name\"; if ($outer) { $inner = \"$outer`$$cls\" } else { $inner = $cls }; if ($pkg) { $fq = \"$pkg.$inner\" } else { $fq = $inner }; if (Test-Path .\\gradlew.bat) { .\\gradlew.bat test --tests \"$fq\" } elseif (Test-Path ./gradlew) { ./gradlew test --tests \"$fq\" } elseif (Test-Path pom.xml) { mvn test -Dtest=\"$fq\" } else { Write-Error 'No build system found' }",
+    "command": "./gradlew test --tests \"$ZED_CUSTOM_java_package_name.$ZED_CUSTOM_java_class_name\"",
     "use_new_terminal": false,
     "reveal": "always",
-    "tags": ["java-test-class", "java-test-class-nested"],
-    "shell": { "program": "pwsh" }
+    "tags": ["java-test-class", "java-test-class-nested"]
   },
   {
     "label": "Run all tests",
-    "command": "if (Test-Path .\\gradlew.bat) { .\\gradlew.bat test } elseif (Test-Path ./gradlew) { ./gradlew test } elseif (Test-Path pom.xml) { mvn test } else { Write-Error 'No build system found' }",
+    "command": "./gradlew test",
     "use_new_terminal": false,
     "reveal": "always",
-    "tags": ["java-test-all"],
-    "shell": { "program": "pwsh" }
+    "tags": ["java-test-all"]
   }
 ]

@@ -168,11 +168,12 @@ Variables pane). The bridge is a native binary downloaded on first launch from
 this extension's GitHub Release — no Node.js involved.
 
 > **Kotlin run/test tasks**: the gutter run/test buttons (`languages/kotlin/
-tasks.json`) run through **PowerShell 7 (`pwsh`)** on every platform. On
-> Windows that's the default; on macOS/Linux install it once with
-> `brew install powershell` (macOS) or your distro's package manager. This
-> keeps one task file working across Windows/macOS/Linux — the commands pick
-> `gradlew.bat` on Windows and `./gradlew` elsewhere automatically.
+> tasks.json`) run through the system's default shell. The commands are plain
+> `./gradlew ...` invocations (Zed resolves the `$ZED_CUSTOM_*` variables
+> itself), so they work under any shell. On Unix-like systems, Git Bash or the
+> system shell finds `./gradlew` directly; on Windows, add Git Bash's `bin`
+> directory to `PATH` (or point Zed's `terminal.shell` at it) so `./gradlew`
+> resolves to the checked-in Gradle wrapper.
 
 ## Settings
 

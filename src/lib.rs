@@ -299,21 +299,32 @@ fn find_binary_in(dir: &str, depth: u32) -> Option<String> {
     None
 }
 
-/// Returns the highest version already installed in the extension sandbox,
-/// together with the path to its binary, if any.
-fn find_installed_server() -> Option<(String, String)> {
-    let entries = fs::read_dir(".").ok()?;
+/// Returns the highest installed server version whose build is at least the
+/// given `min_version` (the current pin), together with the path to its
+/// binary. Older servers are not reused — JetBrains preview builds expire
+/// after 30 days, so reusing them would surface a stale "evaluation expired"
+/// server instead of the pinned one.
+fn find_installed_server(min_version: &str) -> Option<(String, String)> {
+    find_installed_server_in(min_version, ".")
+}
+
+fn find_installed_server_in(min_version: &str, dir: &str) -> Option<(String, String)> {
+    let entries = fs::read_dir(dir).ok()?;
     let mut latest: Option<(String, String)> = None;
     for entry in entries.filter_map(|entry| entry.ok()) {
         let name = entry.file_name().to_string_lossy().to_string();
         let Some(version) = name.strip_prefix("intellij-server-") else {
             continue;
         };
+        if compare_versions(version, min_version) == Ordering::Less {
+            continue;
+        }
         for candidate in [
             format!("{name}/bin/intellij-server"),
             format!("{name}/bin/intellij-server.exe"),
         ] {
-            if fs::metadata(&candidate).is_ok_and(|stat| stat.is_file())
+            let candidate_path = std::path::Path::new(dir).join(&candidate);
+            if fs::metadata(&candidate_path).is_ok_and(|stat| stat.is_file())
                 && latest.as_ref().is_none_or(|(current, _)| {
                     compare_versions(version, current.as_str()) == Ordering::Greater
                 })
@@ -326,16 +337,42 @@ fn find_installed_server() -> Option<(String, String)> {
 }
 
 /// Returns the path of a previously downloaded Rust bridge binary in the
-/// extension sandbox, if one exists (name: `intellij-lsp-bridge-<...>.exe`).
+/// extension sandbox, if one exists and matches the *current* extension
+/// version (name: `intellij-lsp-bridge-<platform>-v<version>[.exe]`).
+///
+/// A stale bridge from an older extension version would silently keep working
+/// (or break silently once the protocol changes), so mismatched files are
+/// deleted here — the caller then downloads the current build.
 fn find_bridge_installed() -> Option<String> {
-    let entries = fs::read_dir(".").ok()?;
+    find_bridge_installed_in(".")
+}
+
+fn find_bridge_installed_in(dir: &str) -> Option<String> {
+    let current = env!("CARGO_PKG_VERSION");
+    let entries = fs::read_dir(dir).ok()?;
+    let mut found: Option<String> = None;
     for entry in entries.filter_map(|entry| entry.ok()) {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with("intellij-lsp-bridge-") {
-            return Some(name);
+        let Some(rest) = name.strip_prefix("intellij-lsp-bridge-") else {
+            continue;
+        };
+        // rest = "<platform>-v<version>[.exe]"
+        let Some(v_idx) = rest.find("-v") else {
+            continue;
+        };
+        let version = rest[v_idx + 2..]
+            .trim_end_matches(".exe")
+            .trim_end_matches(".cmd")
+            .to_string();
+        if version == current {
+            found = Some(name);
+        } else {
+            // Remove the stale bridge so a later launch doesn't reuse it.
+            let stale = std::path::Path::new(dir).join(&name);
+            fs::remove_file(stale).ok();
         }
     }
-    None
+    found
 }
 
 /// Numeric dot-segment comparison, so `263.2689.10` sorts after `263.2689.9`.
@@ -530,10 +567,16 @@ fn resolve_java_exec(worktree: Option<&Worktree>) -> Option<String> {
         }
     }
     if let Ok(java_home) = std::env::var("JAVA_HOME") {
-        let exe = if cfg!(windows) { "java.exe" } else { "java" };
-        let candidate = format!("{}/bin/{}", java_home.trim_end_matches(['/', '\\']), exe);
-        if std::path::Path::new(&candidate).is_file() {
-            return Some(candidate);
+        // Probe both launcher names instead of branching on the platform: the
+        // extension compiles to wasm, so `cfg!(windows)` is never true here
+        // (and `current_platform()` is a host call that panics outside the
+        // wasm host). Checking `java.exe` then `java` works on every OS.
+        let base = format!("{}/bin/", java_home.trim_end_matches(['/', '\\']));
+        for name in ["java.exe", "java"] {
+            let candidate = format!("{base}{name}");
+            if std::path::Path::new(&candidate).is_file() {
+                return Some(candidate);
+            }
         }
     }
     None
@@ -725,15 +768,17 @@ impl IntelliJLspExtension {
             return Ok(path.to_string());
         }
 
-        // Reuse an already-installed server from a previous session.
-        if let Some((_, path)) = find_installed_server() {
+        // Automatic mode: the pinned build from JetBrains' CDN. Only reuse an
+        // installed server whose version is >= this pin (older preview builds
+        // expire after 30 days).
+        let (pinned_version, url, file_type) = artifact_for_platform()?;
+        let version = settings.server_version.clone().unwrap_or(pinned_version);
+
+        if let Some((_, path)) = find_installed_server(&version) {
             self.cached_binary_path = Some(path.clone());
             return Ok(path);
         }
 
-        // Automatic mode: download the pinned build from JetBrains' CDN.
-        let (pinned_version, url, file_type) = artifact_for_platform()?;
-        let version = settings.server_version.clone().unwrap_or(pinned_version);
         let url = settings.server_download_url.clone().unwrap_or(url);
 
         self.download_server(language_server_id, &version, &url, file_type)
@@ -788,7 +833,8 @@ impl IntelliJLspExtension {
 
         let (os, arch) = zed::current_platform();
         let platform_tag = match (os, arch) {
-            (zed::Os::Mac, _) => "macos-aarch64",
+            (zed::Os::Mac, zed::Architecture::Aarch64) => "macos-aarch64",
+            (zed::Os::Mac, _) => "macos-x86_64",
             (zed::Os::Linux, zed::Architecture::Aarch64) => "linux-aarch64",
             (zed::Os::Linux, _) => "linux-x86_64",
             (zed::Os::Windows, zed::Architecture::Aarch64) => "windows-aarch64",
@@ -1255,6 +1301,74 @@ zed::register_extension!(IntelliJLspExtension);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_find_bridge_installed_matches_current_version() {
+        let dir = std::env::temp_dir().join("intellij-lsp-test-bridge-ok");
+        let _ = fs::create_dir_all(&dir);
+
+        let version = env!("CARGO_PKG_VERSION");
+        // A stale bridge from an older version must be removed...
+        fs::write(
+            dir.join("intellij-lsp-bridge-windows-x86_64-v0.0.1.exe"),
+            b"old",
+        )
+        .unwrap();
+        // ...and the current one returned.
+        let current = format!("intellij-lsp-bridge-windows-x86_64-v{version}.exe");
+        fs::write(dir.join(&current), b"new").unwrap();
+
+        assert_eq!(
+            find_bridge_installed_in(&dir.to_string_lossy()).as_deref(),
+            Some(current.as_str())
+        );
+        // Stale bridge deleted.
+        assert!(!fs::metadata(dir.join("intellij-lsp-bridge-windows-x86_64-v0.0.1.exe")).is_ok());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_find_bridge_installed_none_when_mismatched() {
+        let dir = std::env::temp_dir().join("intellij-lsp-test-bridge-none");
+        let _ = fs::create_dir_all(&dir);
+
+        fs::write(dir.join("intellij-lsp-bridge-linux-x86_64-v0.0.1"), b"old").unwrap();
+        assert!(find_bridge_installed_in(&dir.to_string_lossy()).is_none());
+        // The stale file was cleaned up for the next attempt.
+        assert!(!fs::metadata(dir.join("intellij-lsp-bridge-linux-x86_64-v0.0.1")).is_ok());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_find_installed_server_min_version() {
+        let dir = std::env::temp_dir().join("intellij-lsp-test-server-min");
+        let _ = fs::create_dir_all(&dir);
+
+        fs::create_dir_all(dir.join("intellij-server-263.2689.0/bin")).unwrap();
+        fs::write(
+            dir.join("intellij-server-263.2689.0/bin/intellij-server.exe"),
+            b"x",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("intellij-server-263.3000.0/bin")).unwrap();
+        fs::write(
+            dir.join("intellij-server-263.3000.0/bin/intellij-server.exe"),
+            b"x",
+        )
+        .unwrap();
+
+        // Older than the pin → not reused; highest matching is selected.
+        let found = find_installed_server_in("263.2689.0", &dir.to_string_lossy());
+        assert!(found.is_some());
+        assert!(found.unwrap().0 == "263.3000.0");
+
+        // Pin newer than everything installed → None (forces download).
+        assert!(find_installed_server_in("264.0.0", &dir.to_string_lossy()).is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn test_find_binary_in_empty_dir() {
