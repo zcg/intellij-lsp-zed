@@ -159,8 +159,17 @@ fn main() {
         });
     }
 
-    http::serve(shared.clone());
-    dap::serve(dap_listener, shared.clone());
+    // HTTP control endpoint (for the extension) and the DAP TCP proxy run on
+    // their own threads — both must accept connections concurrently, and the
+    // main thread below stays on server stdout routing.
+    {
+        let shared = shared.clone();
+        thread::spawn(move || http::serve(shared));
+    }
+    {
+        let shared = shared.clone();
+        thread::spawn(move || dap::serve(dap_listener, shared));
+    }
 
     // Main loop: server stdout → route.
     let mut frame = framing::FrameReader::new();
