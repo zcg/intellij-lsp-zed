@@ -770,15 +770,19 @@ impl IntelliJLspExtension {
             (zed::Os::Windows, zed::Architecture::Aarch64) => "windows-aarch64",
             (zed::Os::Windows, _) => "windows-x86_64",
         };
-        let exe = if cfg!(windows) { ".exe" } else { "" };
-        let file_name = format!(
-            "{BRIDGE_NAME}-{platform_tag}-{}{exe}",
-            env!("CARGO_PKG_VERSION")
-        );
+        // The extension compiles to wasm, so `cfg!(windows)` is never true
+        // here — the `.exe` suffix must follow the *runtime* platform, and the
+        // asset name must match what `.github/workflows/build-bridge.yml`
+        // uploads: `intellij-lsp-bridge-<platform>-v<version>[.exe]`.
+        let version = env!("CARGO_PKG_VERSION");
+        let exe = if platform_tag.starts_with("windows") {
+            ".exe"
+        } else {
+            ""
+        };
+        let file_name = format!("{BRIDGE_NAME}-{platform_tag}-v{version}{exe}");
         let url = format!(
-            "https://github.com/zcg/intellij-lsp-zed/releases/download/v{}/{}",
-            env!("CARGO_PKG_VERSION"),
-            file_name
+            "https://github.com/zcg/intellij-lsp-zed/releases/download/v{version}/{file_name}"
         );
 
         download_file(&url, &file_name, DownloadedFileType::Uncompressed).map_err(|e| {
