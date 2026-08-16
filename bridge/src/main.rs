@@ -148,6 +148,11 @@ fn main() {
     // pipe (stopping/reloading the language server), EOF here is the signal to
     // terminate the server child — otherwise the JVM leaks and keeps the
     // workspace/port locked for the next session.
+    //
+    // `textDocument/inlayHint` requests are answered locally (empty result):
+    // the IntelliJ server always fails them with "InlayOptions$Companion
+    // .create, parameter raw", so forwarding is a doomed round-trip that
+    // spams error logs and slows the server down.
     {
         let shared = shared.clone();
         thread::spawn(move || {
@@ -162,6 +167,13 @@ fn main() {
                     Ok(n) => {
                         frame.push(&buf[..n]);
                         while let Some(body) = frame.next_frame() {
+                            if let Some(reply) = intercept_inlay_hint(&body) {
+                                let mut stdout = std::io::stdout().lock();
+                                let _ =
+                                    stdout.write_all(&framing::encode_frame(reply.to_string().as_bytes()));
+                                let _ = stdout.flush();
+                                continue;
+                            }
                             let mut stdin = shared.server_stdin.lock().unwrap();
                             if stdin.write_all(&framing::encode_frame(&body)).is_err() {
                                 return;
@@ -217,4 +229,73 @@ fn cleanup_port_file(workdir: &str, workspace_uri: &str) {
         .collect();
     let port_file = Path::new(workdir).join("proxy").join(hex);
     let _ = fs::remove_file(port_file);
+}
+
+/// 若 Zed→服务器 的请求是 `textDocument/inlayHint`,返回要直接回给 Zed 的
+/// 空响应(服务器对该请求必然报错,拦截可消除报错刷屏并减轻服务器负担);
+/// 其他请求返回 `None`,照常转发。
+fn intercept_inlay_hint(body: &[u8]) -> Option<serde_json::Value> {
+    let msg: serde_json::Value = serde_json::from_slice(body).ok()?;
+    if msg.get("method").and_then(|m| m.as_str()) != Some("textDocument/inlayHint") {
+        return None;
+    }
+    let id = msg.get("id")?.clone();
+    Some(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": { "items": [] }
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intercepts_inlay_hint_with_empty_result() {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "textDocument/inlayHint",
+            "params": { "textDocument": { "uri": "file:///x.java" }, "range": {} }
+        });
+        let reply = intercept_inlay_hint(req.to_string().as_bytes()).expect("intercepted");
+        assert_eq!(reply["id"], 14);
+        assert_eq!(reply["result"]["items"], serde_json::json!([]));
+        assert!(reply.get("error").is_none());
+    }
+
+    #[test]
+    fn forwards_other_requests() {
+        let hover = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "textDocument/hover",
+            "params": {}
+        });
+        assert!(intercept_inlay_hint(hover.to_string().as_bytes()).is_none());
+
+        let definition = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 15,
+            "method": "textDocument/definition",
+            "params": {}
+        });
+        assert!(intercept_inlay_hint(definition.to_string().as_bytes()).is_none());
+    }
+
+    #[test]
+    fn forwards_non_json() {
+        assert!(intercept_inlay_hint(b"not json at all").is_none());
+    }
+
+    #[test]
+    fn inlay_hint_without_id_is_forwarded() {
+        let notify = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/inlayHint",
+            "params": {}
+        });
+        assert!(intercept_inlay_hint(notify.to_string().as_bytes()).is_none());
+    }
 }
