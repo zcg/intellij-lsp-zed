@@ -233,7 +233,7 @@ fn cleanup_port_file(workdir: &str, workspace_uri: &str) {
 /// 处理 `rewrite_queue`:对每个 jar:// / jrt:// URI 向 IntelliJ 服务器发
 /// `workspace/textDocumentContent` 请求拿源码文本,写入本地缓存文件,把消息
 /// 里的 URI 改写为 `file://` 后转发给 Zed。服务器也拿不到时按原样转发
-/// (Zed 打不开,但消息不丢)。
+/// (Zed 打不开,但消息不丢)。每步都写 bridge 日志,便于排查跳转失败。
 fn rewrite_worker(shared: Arc<Shared>) {
     loop {
         let item = shared.rewrite_queue.lock().unwrap().pop_front();
@@ -242,6 +242,11 @@ fn rewrite_worker(shared: Arc<Shared>) {
             continue;
         };
         for uri in &uris {
+            writeln!(
+                shared.log.lock().unwrap(),
+                "[sources] fetching text for {uri}"
+            )
+            .ok();
             let resp = lsp::send_lsp_request(
                 &shared,
                 "workspace/textDocumentContent",
@@ -261,10 +266,27 @@ fn rewrite_worker(shared: Arc<Shared>) {
                     if written {
                         let file_uri = jars::path_to_file_uri(&target);
                         jars::replace_uri(&mut msg, uri, &file_uri);
+                        writeln!(
+                            shared.log.lock().unwrap(),
+                            "[sources] wrote {} bytes -> {file_uri}",
+                            text.len()
+                        )
+                        .ok();
                         shared.jars.remember(uri, file_uri);
                         continue;
                     }
+                    writeln!(
+                        shared.log.lock().unwrap(),
+                        "[sources] got text but failed to write cache for {uri}"
+                    )
+                    .ok();
                 }
+            } else {
+                writeln!(
+                    shared.log.lock().unwrap(),
+                    "[sources] server returned no text for {uri}: {resp}"
+                )
+                .ok();
             }
             // 服务器拿不到 → 保留原 uri,消息仍按原样转发。
         }

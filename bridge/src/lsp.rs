@@ -111,6 +111,12 @@ fn forward_to_zed(shared: &Shared, msg: &serde_json::Value) {
         write_stdout(msg);
         return;
     }
+    writeln!(
+        shared.log.lock().unwrap(),
+        "[sources] message has {} virtual uri(s)",
+        uris.len()
+    )
+    .ok();
 
     let mut out = msg.clone();
     let mut pending = Vec::new();
