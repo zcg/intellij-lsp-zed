@@ -35,11 +35,10 @@ jobs:
           fi
 
           # Extract the *extension* version (the vsix wrapper version).
-          NEWEST=$(python3 -c "
-            import json, sys
-            m = json.loads(sys.stdin.read())
-            print(m.get('version', ''))
-          " <<< "$META")
+          # NOTE: keep this as a single line — a multi-line `python3 -c` would
+          # carry the YAML indentation into the Python source and fail with
+          # `IndentationError: unexpected indent`.
+          NEWEST=$(python3 -c "import json,sys; m=json.load(sys.stdin); print(m.get('version',''))" <<< "$META")
           if [ -z "$NEWEST" ]; then
             echo "FAILED: could not parse version from API response"
             echo "Raw response (truncated): ${META:0:500}"
