@@ -764,8 +764,7 @@ impl IntelliJLspExtension {
 
         let (os, arch) = zed::current_platform();
         let platform_tag = match (os, arch) {
-            (zed::Os::Mac, zed::Architecture::Aarch64) => "macos-aarch64",
-            (zed::Os::Mac, _) => "macos-x86_64",
+            (zed::Os::Mac, _) => "macos-aarch64",
             (zed::Os::Linux, zed::Architecture::Aarch64) => "linux-aarch64",
             (zed::Os::Linux, _) => "linux-x86_64",
             (zed::Os::Windows, zed::Architecture::Aarch64) => "windows-aarch64",

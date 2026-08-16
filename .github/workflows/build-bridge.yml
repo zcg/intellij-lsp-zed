@@ -37,10 +37,6 @@ jobs:
             runner: windows-latest
             target: aarch64-pc-windows-msvc
             ext: .exe
-          - platform: macos-x86_64
-            runner: macos-13
-            target: x86_64-apple-darwin
-            ext: ''
           - platform: macos-aarch64
             runner: macos-latest
             target: aarch64-apple-darwin
@@ -85,6 +81,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Upload to release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ github.event.release.tag_name || inputs.version }}
