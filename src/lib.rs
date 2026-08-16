@@ -420,7 +420,9 @@ fn string_to_hex(s: &str) -> String {
 fn proxy_port(workspace_uri: &str) -> Result<u16> {
     let port_file = format!("proxy/{}", string_to_hex(workspace_uri));
     let contents = fs::read_to_string(&port_file).map_err(|e| {
-        format!("failed to read bridge port file ({port_file}); is the language server running? {e}")
+        format!(
+            "failed to read bridge port file ({port_file}); is the language server running? {e}"
+        )
     })?;
     contents
         .trim()
