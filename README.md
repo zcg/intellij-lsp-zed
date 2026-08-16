@@ -2,6 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+🌐 **English** | [**简体中文**](README.zh-CN.md)
+
 Unofficial Zed extension that brings [IntelliJ IDEA's LSP server][1] for Java &
 Kotlin to the [Zed editor][2] — code completion, navigation, refactorings,
 inspections, quick-fixes, **and a full IntelliJ debugger** for Maven, Gradle,
