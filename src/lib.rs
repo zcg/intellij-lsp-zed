@@ -409,26 +409,26 @@ fn workspace_uri(root: &str) -> String {
     }
 }
 
-/// Hex-encodes a string the same way `Buffer.from(s, "utf8").toString("hex")`
-/// does in the proxy script (which uses it to name its port file).
+/// Hex-encodes a string the same way the Rust bridge does (it uses the hex
+/// encoding of the workspace URI to name its port file).
 fn string_to_hex(s: &str) -> String {
     s.as_bytes().iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// Reads the HTTP port of the proxy for the given workspace from
-/// `proxy/<hex(workspace_uri)>` (written by the proxy on startup).
+/// Reads the HTTP port of the bridge for the given workspace from
+/// `proxy/<hex(workspace_uri)>` (written by the bridge on startup).
 fn proxy_port(workspace_uri: &str) -> Result<u16> {
     let port_file = format!("proxy/{}", string_to_hex(workspace_uri));
     let contents = fs::read_to_string(&port_file).map_err(|e| {
-        format!("failed to read proxy port file ({port_file}); is the language server running? {e}")
+        format!("failed to read bridge port file ({port_file}); is the language server running? {e}")
     })?;
     contents
         .trim()
         .parse::<u16>()
-        .map_err(|e| format!("failed to parse proxy port from '{contents}' (corrupted file): {e}"))
+        .map_err(|e| format!("failed to parse bridge port from '{contents}' (corrupted file): {e}"))
 }
 
-/// Sends an LSP request to the running IntelliJ server through the proxy's
+/// Sends an LSP request to the running IntelliJ server through the bridge's
 /// HTTP endpoint, returning the request's `result` as JSON.
 fn lsp_request_via_proxy(
     workspace_uri: &str,
@@ -813,7 +813,7 @@ impl IntelliJLspExtension {
     /// Mirrors the official VS Code extension's `resolveLaunchConfig`: asks
     /// the IntelliJ server to resolve the main class's source document, then
     /// its classpath, javaExec and working directory — so the user never has
-    /// to configure them. Everything is done through the proxy's HTTP endpoint
+    /// to configure them. Everything is done through the bridge's HTTP endpoint
     /// (LSP `workspace/executeCommand`).
     fn resolve_launch_config(
         &mut self,
