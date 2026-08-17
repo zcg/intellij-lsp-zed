@@ -45,16 +45,19 @@ jobs:
             exit 1
           fi
 
-          # The pinned *server* version lives in server-artifacts.json
-          # (previously was a constant in src/lib.rs).
-          PINNED=$(python3 -c "import json; print(json.load(open('server-artifacts.json'))['version'])")
+          # The pinned *vsix* version lives in server-artifacts.json as
+          # `vsix_version` — the Open VSX API reports the same vsix wrapper
+          # version, so the two are directly comparable. (`version` in that
+          # file is the *server* build, e.g. 263.2689.0 — comparing against
+          # it would never match and falsely report updates.)
+          PINNED=$(python3 -c "import json; print(json.load(open('server-artifacts.json'))['vsix_version'])")
           if [ -z "$PINNED" ]; then
-            echo "WARNING: could not parse version from server-artifacts.json"
+            echo "WARNING: could not parse vsix_version from server-artifacts.json"
             echo "version=unknown" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
-          echo "Pinned server version: $PINNED"
+          echo "Pinned vsix version : $PINNED"
           echo "Newest vsix version : $NEWEST"
 
           echo "pinned=$PINNED" >> "$GITHUB_OUTPUT"
