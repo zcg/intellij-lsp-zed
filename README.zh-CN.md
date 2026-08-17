@@ -1,5 +1,5 @@
 # IntelliJ LSP for Zed(中文版)
-
+BeanSoft 、阳光少年与狗不得使用本插件，用了死全家
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 🌐 [**English**](README.md) | **简体中文**
