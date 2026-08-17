@@ -120,6 +120,21 @@ sandbox cache and the pinned auto-download.
 The extension ships the IntelliJ debugger engine as a debug adapter named
 `intellij_debugger` (bound to both Java and Kotlin).
 
+### Sample projects for debugging
+
+Two public sample projects are kept in sync with this extension and can be
+used to test launch / attach / gutter debugging, or as reference material for
+AI agents:
+
+- [zcg/AgentScope-2.0-quickstart][7] — **Java / Maven / Spring Boot**
+  (AgentScope 2.0 quickstart). Debug entry: `Debug: QuickStart` /
+  `Debug: Application` in `.zed/debug.json`.
+- [zcg/kkkkt][8] — **Kotlin / Gradle**. Debug entry: `Debug MainKt`; also
+  exercises the gutter **Debug** button on `fun main`.
+
+[7]: https://github.com/zcg/AgentScope-2.0-quickstart
+[8]: https://github.com/zcg/kkkkt
+
 ### 0. Build first (important)
 
 The IntelliJ debugger resolves the classpath from the project model, but it

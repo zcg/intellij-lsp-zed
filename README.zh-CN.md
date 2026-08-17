@@ -105,6 +105,20 @@ IntelliJ 调试器**,支持 Maven、Gradle 与 Bazel 项目。
 扩展自带 IntelliJ 调试引擎,调试适配器名为 `intellij_debugger`(同时绑定
 Java 和 Kotlin)。
 
+### 调试测试项目
+
+两个公开示例项目与本扩展保持同步,可用于测试启动 / 附加 / gutter 调试,
+也可供 AI 代理作为参考:
+
+- [zcg/AgentScope-2.0-quickstart][7] — **Java / Maven / Spring Boot**
+  (AgentScope 2.0 quickstart)。调试入口:`.zed/debug.json` 中的
+  `Debug: QuickStart` / `Debug: Application`。
+- [zcg/kkkkt][8] — **Kotlin / Gradle**。调试入口:`Debug MainKt`;也用于
+  验证 `fun main` 上的 gutter **Debug** 按钮。
+
+[7]: https://github.com/zcg/AgentScope-2.0-quickstart
+[8]: https://github.com/zcg/kkkkt
+
 ### 0. 先构建(重要)
 
 IntelliJ 调试器从项目模型解析 classpath,但**不会**帮你编译代码。请先构建:
