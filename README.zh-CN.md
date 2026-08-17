@@ -17,6 +17,34 @@ IntelliJ 调试器**,支持 Maven、Gradle 与 Bazel 项目。
 [2]: https://zed.dev
 [3]: https://www.jetbrains.com/legal/docs/toolbox/user/
 
+## 亮点 —— 相比原版的增强
+
+本仓库在[上游 intellij-lsp-zed][6](v0.2.0)的基础上,新增了完整的 IntelliJ
+调试体验与原生 Rust bridge:
+
+- **完整 IntelliJ 调试器** —— 为 Java 与 Kotlin 提供 `intellij_debugger`
+  DAP 适配器:F5 启动、附加到运行中的 JVM、gutter 调试(主类自动从
+  `build.gradle.kts` / `pom.xml` 推断)。
+- **原生 Rust bridge**(`bridge/`)— 取代旧的 Node.js 代理:LSP stdio 转发、
+  `start_debug_server` HTTP 端点、DAP TCP 代理(把 IntelliJ 的 `file://`
+  源 URI 重写为 Zed Variables 面板所需的路径)。已为全部 6 个平台发布
+  (Windows/macOS/Linux × x64/arm64)。
+- **第三方库与 JDK 源码跳转** —— 在库类上 `Cmd+Click` 即可打开真实源码:
+  bridge 从本地 `<artifact>-<version>-sources.jar` / JDK `src.zip` 提取到
+  缓存,解决上游返回 `jar://` URI 导致 Zed 无法打开的问题。
+- **Java 与 Kotlin 一等支持** —— 自带完整语言定义(语法、高亮、runnables、
+  tasks),覆盖 Java、Kotlin、Gradle、Gradle-KTS 与 Properties。
+- **健壮性修复** —— 项目模型未导入时调试启动不再中止;`javaExec` 优先由
+  服务器解析(绝不注入裸 `java`);工作目录回退到工作区根;文件型 worktree
+  根被归一化;过期 bridge/server 版本自动清理;bridge 退出时终止孤儿 JVM。
+- **inlayHint 拦截** —— bridge 本地应答 `textDocument/inlayHint`(该请求在
+  IntelliJ 服务器上必定失败),消除报错刷屏并减轻服务器负担。
+- **跨平台任务** —— gutter run/test 任务为朴素的 `./gradlew` 命令,任何
+  shell 都能执行(Windows 差异见下文说明)。
+- **双语文档** —— 英文与简体中文 README,支持语言切换。
+
+[6]: https://github.com/hlucas13/intellij-lsp-zed
+
 ## 安装(Install)
 
 发布到 Zed 扩展注册表后:

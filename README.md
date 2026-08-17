@@ -20,6 +20,43 @@ and Bazel projects.
 [2]: https://zed.dev
 [3]: https://www.jetbrains.com/legal/docs/toolbox/user/
 
+## Highlights — what this fork adds
+
+Built on top of the upstream [intellij-lsp-zed][6] (v0.2.0), this fork adds a
+full IntelliJ debugging experience and a native Rust bridge:
+
+- **Full IntelliJ debugger** — the `intellij_debugger` DAP adapter for Java &
+  Kotlin: F5 launch, attach to a running JVM, and gutter debug with the main
+  class auto-inferred from `build.gradle.kts` / `pom.xml`.
+- **Native Rust bridge** (`bridge/`) — replaces the old Node.js proxy: LSP
+  stdio forwarding, a `start_debug_server` HTTP endpoint, and a DAP TCP proxy
+  that rewrites IntelliJ's `file://` source URIs so Zed's Variables pane
+  works. Published for all 6 platforms (Windows/macOS/Linux × x64/arm64).
+- **Third-party & JDK source navigation** — `Cmd+Click` into library classes
+  opens the real source: the bridge extracts it from the local
+  `<artifact>-<version>-sources.jar` / JDK `src.zip` into a cache, so
+  goto-definition works where the upstream leaves you on a `jar://` URI Zed
+  can't open.
+- **First-class Java & Kotlin** — ships the full language definitions
+  (grammar, highlighting, runnables, tasks) for Java, Kotlin, Gradle,
+  Gradle-KTS and Properties.
+- **Robustness fixes** — debug launches never abort when the project model
+  isn't imported yet; `javaExec` is resolved by the server first (never a
+  bare `java`); the working directory falls back to the workspace root;
+  file-rooted worktrees are normalized; stale bridge/server versions are
+  cleaned up automatically; orphaned server JVMs are terminated when the
+  bridge exits.
+- **Inlay-hint interception** — the bridge answers `textDocument/inlayHint`
+  locally (the IntelliJ server always fails these requests), removing
+  error-log spam and reducing server load.
+- **Cross-platform tasks** — gutter run/test tasks are plain `./gradlew`
+  commands that work under any shell on every platform (see the Windows note
+  below).
+- **Bilingual docs** — English and Simplified Chinese READMEs with a language
+  switcher.
+
+[6]: https://github.com/hlucas13/intellij-lsp-zed
+
 ## Install
 
 Once published to the Zed extension registry:
