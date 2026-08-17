@@ -1625,24 +1625,27 @@ mod tests {
     #[test]
     fn test_normalize_project_root_file() {
         // A worktree rooted at a single file normalizes to its parent dir.
-        assert_eq!(
-            normalize_project_root(r"D:\Projects\javaprojects\kkkkt\src\main\kotlin\Main.kt"),
-            r"D:\Projects\javaprojects\kkkkt\src\main\kotlin"
-        );
-        assert_eq!(
-            normalize_project_root("/home/user/proj/src/Main.kt"),
-            "/home/user/proj/src"
-        );
+        // Build the path with the platform separator: a hardcoded Windows
+        // path (`D:\...\Main.kt`) fails on Linux CI, where `\` is not a
+        // separator and the whole string parses as one filename with no
+        // parent.
+        let dir = std::env::temp_dir().join("intellij-lsp-test-norm-file");
+        let _ = fs::create_dir_all(dir.join("src/main"));
+        let file = dir.join("src/main/Main.kt");
+        fs::write(&file, b"").unwrap();
+        let expected = dir.join("src/main").to_string_lossy().into_owned();
+        assert_eq!(normalize_project_root(&file.to_string_lossy()), expected);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_normalize_project_root_dir_unchanged() {
         // A directory root passes through untouched.
-        assert_eq!(
-            normalize_project_root(r"D:\Projects\javaprojects\kkkkt"),
-            r"D:\Projects\javaprojects\kkkkt"
-        );
-        assert_eq!(normalize_project_root("/home/user/proj"), "/home/user/proj");
+        let dir = std::env::temp_dir().join("intellij-lsp-test-norm-dir");
+        let _ = fs::create_dir_all(&dir);
+        let s = dir.to_string_lossy().into_owned();
+        assert_eq!(normalize_project_root(&s), s);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
