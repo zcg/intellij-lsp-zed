@@ -243,7 +243,9 @@ fn intercept_inlay_hint(body: &[u8]) -> Option<serde_json::Value> {
     Some(serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
-        "result": { "items": [] }
+        // LSP 3.17: textDocument/inlayHint 的 result 是 InlayHint[] 数组,
+        // 不是 {items: []} 对象 — Zed 按数组反序列化。
+        "result": []
     }))
 }
 
@@ -261,7 +263,8 @@ mod tests {
         });
         let reply = intercept_inlay_hint(req.to_string().as_bytes()).expect("intercepted");
         assert_eq!(reply["id"], 14);
-        assert_eq!(reply["result"]["items"], serde_json::json!([]));
+        // LSP 规范:result 是数组(不是 {items: []} 对象)。
+        assert_eq!(reply["result"], serde_json::json!([]));
         assert!(reply.get("error").is_none());
     }
 
